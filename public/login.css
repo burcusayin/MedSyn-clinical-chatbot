@@ -1,0 +1,6 @@
+/* public/login.css (optional) */
+input[name="email"], input#email, input[type="email"] {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}

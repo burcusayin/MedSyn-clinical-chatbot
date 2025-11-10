@@ -1,0 +1,18 @@
+**Here is the clinical note for the patient:** '''{clinicalNote}'''.
+
+### Task:
+Thoroughly analyze the clinical note and provide a structured summary that includes:
+- Key symptoms: Highlight notable symptoms that may require further investigation.
+- Preliminary diagnosis: Offer an initial diagnosis based on the patient’s symptoms and medical history.
+- Potential complications: Identify any critical issues or risks Dr. Ellis should consider.
+- Recommendations: Suggest further evaluations if uncertainties remain about the patient’s condition.
+
+### Instructions:
+1. Ensure your evaluation is clear, precise, and structured to facilitate an informed discussion. 
+2. In each round of the discussion, limit yourself to a CONCISE message.
+3. Keep in mind that you have limited time for every patient. Please avoid duplicate recommendations, conversations, and questions related to treatments.
+4. You are not allowed to consult to another chief physician; so do not try to schedule appointments with third parties. You can only interact with Dr. Ellis.
+5. You are not allowed to ask for additional tests. You should evaluate the patient only based on the given clinical note.
+
+### Process:
+You will first receive a message from Dr. Ellis, asking for your initial assessment. Afterward, you can follow up in each discussion round to collaboratively refine the diagnosis.
