@@ -1,0 +1,201 @@
+<!-- public/thank-you.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Session completed • MedSyn</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- your external stylesheet (optional) -->
+  <link href="/public/thank-you.css" rel="stylesheet" />
+</head>
+<body>
+  <main class="wrap">
+    <section class="card">
+      <h1>✅ Thank you!</h1>
+      <p>You’ve successfully completed the session.</p>
+
+      <div id="summary" class="summary">
+        <ul id="summaryList"></ul>
+      </div>
+
+      <!-- Keep the button OUTSIDE #summary so rendering never wipes it -->
+      <div class="actions">
+        <button id="logoutBtn" class="btn" type="button" onclick="medsynLogoutInline()">Log out</button>
+      </div>
+    </section>
+
+    <footer>
+      <small>MedSyn • <span id="ts"></span></small>
+    </footer>
+  </main>
+
+  <script>
+    function secondsToHMS(s) {
+      if (s == null || isNaN(s)) return "-";
+      s = Math.max(0, Math.round(Number(s)));
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+      return (h ? h + "h " : "") + (m ? m + "m " : "") + sec + "s";
+    }
+
+    function decodeFromHash() {
+      try {
+        const h = location.hash ? location.hash.slice(1) : "";
+        return h ? JSON.parse(decodeURIComponent(h)) : null;
+      } catch { return null; }
+    }
+
+    function render() {
+      const list = document.getElementById("summaryList");
+      const tsEl = document.getElementById("ts");
+      if (tsEl) tsEl.textContent = new Date().toLocaleString();
+
+      let data = null;
+      try { data = JSON.parse(sessionStorage.getItem("medsyn_summary") || "null"); } catch {}
+      if (!data) data = decodeFromHash();
+
+      if (!list) return;
+      if (!data) {
+        list.innerHTML = `<li><em>No session data found.</em></li>`;
+        return;
+      }
+
+      const { username, sessionId, totalTimeSec, nCases, endedAt } = data;
+      list.innerHTML = `
+        <li><strong>User:</strong> ${username || "-"}</li>
+        <li><strong>Session ID:</strong> ${sessionId || "-"}</li>
+        <li><strong>Cases completed:</strong> ${nCases ?? "-"}</li>
+        <li><strong>Total time:</strong> ${secondsToHMS(totalTimeSec)}</li>
+        <li><strong>Ended at:</strong> ${endedAt ? new Date(endedAt).toLocaleString() : "-"}</li>
+      `;
+    }
+
+    document.addEventListener("DOMContentLoaded", render);
+  </script>
+
+
+  <!-- Optional server-side logout (not required for visibility) -->
+  <script src="/public/logout.js" defer></script>
+
+  <!-- Robust wiring + strong visibility fallback -->
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      // Wire the main button
+      const btn = document.getElementById("logoutBtn");
+      if (btn) {
+        btn.addEventListener("click", () => (window.medsynLogout ? window.medsynLogout() : location.replace("/login")));
+      }
+
+      // If the button is not actually visible to the user (clipped/covered), inject a fixed fallback.
+      setTimeout(() => {
+        const b = document.getElementById("logoutBtn");
+        const cs = b ? getComputedStyle(b) : null;
+        const r  = b ? b.getBoundingClientRect() : null;
+        const visible = !!b
+          && cs.visibility !== "hidden"
+          && cs.display   !== "none"
+          && r && r.width > 1 && r.height > 1
+          && r.bottom > 0 && r.right > 0
+          && r.top < (innerHeight || document.documentElement.clientHeight)
+          && r.left < (innerWidth  || document.documentElement.clientWidth);
+
+        if (!visible) {
+          const host = document.createElement("div");
+          host.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:999999";
+          host.innerHTML =
+            '<button id="logoutBtnFallback" ' +
+            'style="padding:12px 16px;border-radius:12px;border:0;' +
+            'background:#3a67ff;color:#fff;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.35)">' +
+            'Log out</button>';
+          document.body.appendChild(host);
+          document.getElementById("logoutBtnFallback")
+            .addEventListener("click", () =>
+              (window.medsynLogout ? window.medsynLogout() : location.replace("/login"))
+            );
+        }
+      }, 0);
+    });
+  </script>
+
+  <script>
+  async function medsynLogoutInline() {
+    // 1) Best-effort server logout
+    try { await fetch("/api/auth/logout", { method: "POST", credentials: "include" }); } catch {}
+    try { await fetch("/api/auth/logout", { method: "GET",  credentials: "include" }); } catch {}
+    try { await fetch("/api/v1/auth/logout", { method: "POST", credentials: "include" }); } catch {}
+    try { await fetch("/api/v1/auth/logout", { method: "GET",  credentials: "include" }); } catch {}
+    try { await fetch("/auth/logout",       { method: "POST", credentials: "include" }); } catch {}
+    try { await fetch("/auth/logout",       { method: "GET",  credentials: "include" }); } catch {}
+
+    // 2) Client cleanup (stop auto-rejoin)
+    try {
+      if ("serviceWorker" in navigator && navigator.serviceWorker.getRegistrations) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const r of regs) { try { await r.unregister(); } catch {} }
+      }
+    } catch {}
+    try {
+      if (window.caches?.keys) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+    } catch {}
+    try {
+      if ("indexedDB" in window) {
+        if (indexedDB.databases) {
+          const dbs = await indexedDB.databases();
+          await Promise.all(dbs.map(db => { try { return indexedDB.deleteDatabase(db.name); } catch {} }));
+        } else {
+          for (const n of ["chainlit","keyval-store","localforage"]) { try { indexedDB.deleteDatabase(n); } catch {} }
+        }
+      }
+    } catch {}
+    try { sessionStorage.clear(); } catch {}
+    try { localStorage.clear(); }  catch {}
+
+    // Best-effort cookie clearing
+    try {
+      const cookies = (document.cookie || "").split(";");
+      const host = location.hostname, parts = host.split(".");
+      const domains = [];
+      for (let i = 0; i < parts.length; i++) {
+        const d = parts.slice(i).join(".");
+        if (d) { domains.push(d, "." + d); }
+      }
+      if (!domains.includes(host)) { domains.push(host, "." + host); }
+      const segs  = location.pathname.split("/").filter(Boolean);
+      const paths = ["/"]; let cur = "";
+      for (const s of segs) { cur += "/" + s; paths.push(cur); }
+      for (const raw of cookies) {
+        const eq = raw.indexOf("="), name = (eq > -1 ? raw.slice(0, eq) : raw).trim();
+        if (!name) continue;
+        for (const d of domains) for (const p of paths) {
+          try { document.cookie = `${name}=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=${p}; Domain=${d}; SameSite=Lax`; } catch {}
+          try { document.cookie = `${name}=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=${p}; Domain=${d}; SameSite=None; Secure`; } catch {}
+        }
+        for (const p of paths) { try { document.cookie = `${name}=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=${p}`; } catch {} }
+      }
+    } catch {}
+
+    // 3) HARD STOP: replace the document so the SPA can’t reboot
+    const done = `
+<!doctype html><meta charset="utf-8"><title>Logged out • MedSyn</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<body style="font:16px/1.4 system-ui;display:grid;place-items:center;height:100dvh;margin:0;background:#0e1324;color:#e7ecff">
+  <main style="background:#121a30;padding:24px;border-radius:14px;border:1px solid rgba(255,255,255,.08)">
+    <h1 style="margin:0 0 8px">You're logged out</h1>
+    <p style="margin:0;color:#b7c3e0">You can safely close this tab.</p>
+  </main>
+</body>`;
+
+    try { history.replaceState(null, "", "/public/logout-done.html"); } catch {}
+    try {
+      if (window.stop) window.stop();
+      document.open(); document.write(done); document.close();
+    } catch {
+      location.replace("/public/logout-done.html");
+    }
+  }
+  </script>
+
+</body>
+</html>

@@ -1,0 +1,11 @@
+**Here is the clinical note for the patient:** '''{clinicalNote}'''.
+
+### Instructions:
+1. Carefully analyze the given clinical note to ensure that no symptoms are overlooked.
+2. You are not allowed to ask any questions or make assumptions beyond the information provided in the clinical note.
+3. Once you are ready, write the discharge text for the patient.
+4. The discharge text should include only the `diagnosis` and `codes` fields:
+    - `diagnosis` field should specify the patient's final diagnosis. Please note that you should decide the final diagnosis.
+    - `codes` field should list the ICD-10 codes corresponding to the diagnosis specified in the `diagnosis` field. Keep in mind that this field is a string, do not use `[]' while listing the codes. 
+5. Remember to refer the clinical note while writing the discharge text. Ensure that the `diagnosis`, and `codes` fields are complete and unambiguous; they must not be left empty or unclear.
+6. Return your dischargeText using the TOOL `baseline_discharge_text_tool`. 
