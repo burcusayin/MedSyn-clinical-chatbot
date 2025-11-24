@@ -13,6 +13,7 @@ import langroid as lr
 import langroid.language_models as lm
 from langroid.agent.callbacks.chainlit import add_instructions, ChainlitAgentCallbacks
 
+import src.clinical_chatbot.health
 from src.physician_agent import PhysicianModel
 from src.assistant_agent import AssistantModel
 from src.utils import read_prompt_from_file, serialize_dict
@@ -31,6 +32,9 @@ from src.clinical_chatbot.utils import (
     finalize_session as _finalize_session,
 )
 
+import os, logging
+from logging.handlers import RotatingFileHandler
+
 # =========================
 # Env / config
 # =========================
@@ -46,6 +50,9 @@ PHY_MODEL       = os.getenv("PHY_MODEL")
 ASS_MODEL       = os.getenv("ASS_MODEL")
 PHY_MODEL_NAME  = os.getenv("PHY_MODEL_NAME")
 ASS_MODEL_NAME  = os.getenv("ASS_MODEL_NAME")
+
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")  # default for Docker
+OLLAMA_API_BASE = f"{OLLAMA_HOST.rstrip('/')}/v1"
 
 RANDOM_SEED     = 42
 
@@ -65,6 +72,7 @@ def create_assistant_agent(ass_prompt: str) -> lr.ChatAgent:
         timeout=180,
         chat_context_length=1_040_000,
         chat_model=f"ollama/{ASS_MODEL}",
+        api_base=OLLAMA_API_BASE,
         seed=RANDOM_SEED,
     )
     return lr.ChatAgent(lr.ChatAgentConfig(system_message=ass_prompt, llm=cfg))
@@ -171,6 +179,14 @@ async def on_chat_start():
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     safe_user, safe_sess = _get_session_meta_for_filename()
     log_path = LOG_DIR / f"chat__{safe_user}__{safe_sess}.log"
+    
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    fh = RotatingFileHandler(log_path, maxBytes=5*1024*1024, backupCount=5); fh.setFormatter(fmt); root.addHandler(fh)
+    sh = logging.StreamHandler(); sh.setFormatter(fmt); root.addHandler(sh)
+
 
     cl.user_session.set("log_path", str(log_path))
     cl.user_session.set("questions_df", df)

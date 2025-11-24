@@ -1,0 +1,15 @@
+# --- keep the app image lean and avoid permission issues ---
+reverse-proxy/**
+logs/**
+output/**
+db/**
+data/**
+public/**
+
+# secrets & noise
+.env*
+.git
+.gitignore
+__pycache__/
+*.pyc
+.DS_Store

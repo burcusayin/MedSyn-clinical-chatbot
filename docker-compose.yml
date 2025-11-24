@@ -1,0 +1,67 @@
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: medsyn-nginx
+    depends_on:
+      - web
+    ports:
+      - "80:80"          # for HTTP-01 + redirect to HTTPS
+      - "8080:8080"      # Tech maps public 443 -> host 8080
+      # - "443:443"      # (optional) only if you also want to bind 443 locally
+    volumes:
+      - ./reverse-proxy/conf.d:/etc/nginx/conf.d:ro
+      - ./reverse-proxy/log:/var/log/nginx:rw   # <-- host log dir
+      - ./reverse-proxy/ssl_user:/etc/ssl:ro                       # holds fullchain.pem + privkey.pem
+      - ./reverse-proxy/acme:/var/www/certbot                 # webroot for ACME http-01
+      - ./public:/srv/public:ro                               # your static pages
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/nginx-health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: medsyn-web
+    env_file: .env.prod
+    expose:
+      - "8000"
+    environment:
+      - PYTHONPATH=/app
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
+    volumes:
+      - ./logs:/app/logs 
+      - ./output:/app/output
+      - ./db:/app/db
+      - ./data:/app/data
+      - ./prompts:/app/prompts
+      - ./public:/app/public
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: medsyn-ollama
+    restart: unless-stopped
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    volumes:
+      - ollama:/root/.ollama
+    # For NVIDIA GPUs, uncomment one of:
+    # runtime: nvidia
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: ["gpu"]
+
+volumes:
+  ollama:
