@@ -3,6 +3,7 @@
 .env*/
 .env/**
 *.env
+.env*
 
 # --- Python ---
 __pycache__/
@@ -21,12 +22,20 @@ dist/
 venv/
 
 # --- Logs ---
-logs/
-error/
+/error/
+/logs/
+/output/
+/reverse-proxy/ssl/
+/reverse-proxy/letsencrypt/
+/reverse-proxy/log/
 
 # --- Data ---
 data/
 db/
+/db/*.db
+
+# --- Users ---
+src/clinical_chatbot/users.db
 
 # --- Node/Frontend ---
 node_modules/
@@ -45,3 +54,20 @@ coverage/
 .chainlit/.cache/
 # keep config if you have it:
 !.chainlit/config.toml
+
+# ---- MedSyn runtime data (do NOT commit) ----
+data/
+logs/
+output/
+db/
+error/
+
+# Nginx logs
+reverse-proxy/log/
+
+# SQLite databases, just in case
+*.db
+
+# TLS / cert-related stuff
+reverse-proxy/ssl_user/
+reverse-proxy/certs/
