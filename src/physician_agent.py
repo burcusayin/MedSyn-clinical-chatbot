@@ -4,7 +4,7 @@ class PhysicianModel:
         self.system_message = system_prompt
         self.user_prompt_template = user_prompt_template
     
-    def generate_prompt(self, clinicalNote: str):
-        prompt = self.user_prompt_template.format(clinicalNote=clinicalNote)
+    def generate_prompt(self):
+        prompt = self.user_prompt_template
         return self.system_message + prompt
     

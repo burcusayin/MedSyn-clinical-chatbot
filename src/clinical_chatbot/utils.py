@@ -98,15 +98,17 @@ def get_session_meta_for_filename() -> Tuple[str, str]:
 
 
 def log_line(text: str) -> None:
-    """Append a single line to the current session log (if available)."""
     path = cl.user_session.get("log_path")
     if not path:
         return
     try:
+        now = datetime.now().isoformat()
+        cleaned = text.rstrip("\n")  
         with open(path, "a", encoding="utf-8") as f:
-            f.write(text.rstrip("\n") + "\n")
+            f.write(f"[{now}] {cleaned}\n")
     except Exception:
         pass
+
 
 
 # -------- Timing helpers --------

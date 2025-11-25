@@ -55,13 +55,7 @@ services:
       - OLLAMA_HOST=0.0.0.0:11434
     volumes:
       - ollama:/root/.ollama
-    # For NVIDIA GPUs, uncomment one of:
-    # runtime: nvidia
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - capabilities: ["gpu"]
+    gpus: all
 
 volumes:
   ollama:

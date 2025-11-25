@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 from time import perf_counter
 import asyncio
+import traceback
 from textwrap import dedent
 
 import pandas as pd
@@ -32,7 +33,7 @@ from src.clinical_chatbot.utils import (
     finalize_session as _finalize_session,
 )
 
-import os, logging
+import logging
 from logging.handlers import RotatingFileHandler
 
 # =========================
@@ -56,7 +57,7 @@ OLLAMA_API_BASE = f"{OLLAMA_HOST.rstrip('/')}/v1"
 
 RANDOM_SEED     = 42
 
-# Prompt files (your original design)
+# Prompt files
 phy_system_prompt   = PROMPTS_DIR / "real_phy_system_prompt.txt"
 phy_prompt_template = PROMPTS_DIR / "real_phy_user_prompt.txt"
 ass_system_prompt   = PROMPTS_DIR / "ass_system_prompt.txt"
@@ -77,6 +78,7 @@ def create_assistant_agent(ass_prompt: str) -> lr.ChatAgent:
     )
     return lr.ChatAgent(lr.ChatAgentConfig(system_message=ass_prompt, llm=cfg))
 
+
 def create_prompts(row) -> tuple[str, str]:
     chief_complaint = str(row.get("chief_complaint", ""))
     patient_history = str(row.get("history", ""))
@@ -96,12 +98,20 @@ def create_prompts(row) -> tuple[str, str]:
     read_ass_sys  = read_prompt_from_file(ass_system_prompt)
     read_ass_tmpl = read_prompt_from_file(ass_prompt_template)
 
-    phy_model = PhysicianModel(PHY_MODEL_NAME, system_prompt=read_phy_sys, user_prompt_template=read_phy_tmpl)
-    ass_model = AssistantModel(ASS_MODEL_NAME, system_prompt=read_ass_sys, user_prompt_template=read_ass_tmpl)
+    phy_model = PhysicianModel(
+        PHY_MODEL_NAME,
+        system_prompt=read_phy_sys,
+        user_prompt_template=read_phy_tmpl,
+    )
+    ass_model = AssistantModel(
+        ASS_MODEL_NAME,
+        system_prompt=read_ass_sys,
+        user_prompt_template=read_ass_tmpl,
+    )
 
-    phy_prompt = phy_model.generate_prompt(phy_clinical_note)
+    phy_prompt = phy_model.generate_prompt()
     ass_prompt = ass_model.generate_prompt(ass_clinical_note)
-    return ass_prompt, phy_prompt
+    return ass_prompt, ass_clinical_note, phy_prompt, phy_clinical_note
 
 # =========================
 # Auth
@@ -111,10 +121,16 @@ ensure_admin()
 @cl.password_auth_callback
 def auth_callback(username: str, password: str):
     conn = get_conn()
-    row = conn.execute("SELECT password_hash, role FROM users WHERE username=?", (username,)).fetchone()
+    row = conn.execute(
+        "SELECT password_hash, role FROM users WHERE username=?",
+        (username,),
+    ).fetchone()
     conn.close()
     if row and verify_password(password, row[0]):
-        return cl.User(identifier=username, metadata={"role": row[1], "provider": "password"})
+        return cl.User(
+            identifier=username,
+            metadata={"role": row[1], "provider": "password"},
+        )
     return None
 
 # =========================
@@ -147,13 +163,96 @@ async def _stop_streaming_and_optionally_close(close_agent: bool = False):
         cl.user_session.set("ass_agent", None)
 
 # =========================
-# Client redirect trigger (marker-only; JS handles logout)
+# Client redirect trigger
 # =========================
-async def _force_client_redirect_to_thanks(username: str, sess_id: str, total_sec: float, n_cases_done: int):
+async def _force_client_redirect_to_thanks(
+    username: str,
+    sess_id: str,
+    total_sec: float,
+    n_cases_done: int,
+):
+    """Send a special marker message that the frontend JS uses to auto-redirect to the thank you page."""
     await cl.Message(
-        content=f"[[AUTO_LOGOUT::{username or 'unknown'}::{sess_id or ''}::{(total_sec or 0.0):.2f}::{int(n_cases_done or 0)}]]"
+        content=(
+            f"[[AUTO_LOGOUT::{username or 'unknown'}::{sess_id or ''}::"
+            f"{(total_sec or 0.0):.2f}::{int(n_cases_done or 0)}]]"
+        )
     ).send()
-    await asyncio.sleep(0.05)  # let it flush to client
+    # Give the client a moment to receive the marker
+    await asyncio.sleep(0.05)
+
+def _log_conversation_snapshot(prefix: str = "") -> None:
+    """Log the current agent.message_history (user + LLM messages) to the session log."""
+    agent = cl.user_session.get("ass_agent")
+    if not agent:
+        return
+
+    try:
+        mh = getattr(agent, "message_history", None)
+        if not (mh and hasattr(mh, "messages")):
+            return
+
+        if prefix:
+            _log_line(
+                f"{prefix} Conversation snapshot ({datetime.now().isoformat()}):"
+            )
+
+        for m in mh.messages:
+            raw_role = getattr(m, "role", None) or getattr(m, "sender", "assistant")
+            text = getattr(m, "content", "")
+
+            if raw_role in ("assistant", "system"):
+                who = "LLM"
+            elif raw_role in ("user", "human"):
+                who = "USER"
+            else:
+                who = raw_role or "UNKNOWN"
+
+            ts = datetime.now().isoformat()
+            _log_line(f"[{ts}] {who}: {text}")
+    except Exception:
+        # Never break the app because logging failed
+        pass
+
+
+async def _start_case(idx: int) -> None:
+    """Initialize and start the given case index (0-based)."""
+    df: pd.DataFrame = cl.user_session.get("questions_df")
+    if df is None or len(df) == 0:
+        await cl.Message(content="No cases loaded.").send()
+        return
+
+    total = len(df)
+    if idx < 0 or idx >= total:
+        await cl.Message(content="No more cases available.").send()
+        return
+
+    cl.user_session.set("current_question_index", idx)
+
+    row = df.iloc[idx]
+
+    ass_prompt, ass_clinical_note, phy_prompt, phy_clinical_note = create_prompts(row)
+    agent = create_assistant_agent(ass_prompt)
+    cl.user_session.set("ass_agent", agent)
+    ChainlitAgentCallbacks(agent)
+
+    qid = row.get("note_id", idx + 1)
+    _q_start()
+    _log_line(f"Q{idx + 1} (ID: {qid}) started at {datetime.now().isoformat()}")
+
+    # Mark that a case has started => we now accept user input
+    cl.user_session.set("case_started", True)
+
+    # For each case, show a clear "start" message + the clinical note
+    msg_content = f"Case {idx+1} is ready, please see the clinical note for the patient below. You can now start the conversation with the assistant."
+
+    try:
+        msg_content += "\n\n" + dedent(phy_clinical_note)
+        await cl.Message(content=msg_content).send()
+    except Exception:
+        await cl.Message(
+            content=f"Started case {idx + 1}. Please continue the conversation."
+        ).send()
 
 # =========================
 # Lifecycle
@@ -172,21 +271,24 @@ async def on_chat_start():
 
     user = get_current_user()
     session_id = session_id_generator()
-    cl.user_session.set("user", {"name": user.identifier if user else "guest",
-                                 "role": (user.metadata or {}).get("role", "user") if user else "user"})
+    cl.user_session.set("user", user)
     cl.user_session.set("session_id", session_id)
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     safe_user, safe_sess = _get_session_meta_for_filename()
     log_path = LOG_DIR / f"chat__{safe_user}__{safe_sess}.log"
-    
+
+    # Configure logging for this session
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    fh = RotatingFileHandler(log_path, maxBytes=5*1024*1024, backupCount=5); fh.setFormatter(fmt); root.addHandler(fh)
-    sh = logging.StreamHandler(); sh.setFormatter(fmt); root.addHandler(sh)
-
+    fh = RotatingFileHandler(log_path, maxBytes=5 * 1024 * 1024, backupCount=5)
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
 
     cl.user_session.set("log_path", str(log_path))
     cl.user_session.set("questions_df", df)
@@ -198,151 +300,338 @@ async def on_chat_start():
     cl.user_session.set("question_t0", None)
     cl.user_session.set("session_t0", perf_counter())
     cl.user_session.set("last_assistant_task", None)
+    cl.user_session.set("case_started", False)  # gate input until Start Case 1
 
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(f"Session started: {datetime.now().isoformat()}\n")
         f.write(f"Total questions in session: {len(df)}\n\n")
 
-    row = df.iloc[0]
-    ass_prompt, phy_prompt = create_prompts(row)
-    agent = create_assistant_agent(ass_prompt)
-    cl.user_session.set("ass_agent", agent)
-    ChainlitAgentCallbacks(agent)
+    # Build and show instructions from the first case, but DO NOT start the agent yet
+    first_row = df.iloc[0]
+    ass_prompt, ass_clinical_note, phy_prompt, phy_clinical_note = create_prompts(first_row)
 
-    await add_instructions(title="Welcome to Clinical Chatbot!", content=dedent(phy_prompt))
+    await add_instructions(
+        title="Welcome to Clinical Chatbot!",
+        content=dedent(phy_prompt),
+    )
 
-    qid = row.get("note_id", 1)
-    _q_start()
-    _log_line(f"Q1 (ID: {qid}) started at {datetime.now().isoformat()}")
+    cl.user_session.set("instructions_shown", True)
+
+    # Hard gate: user must explicitly start or exit
+    res = await cl.AskActionMessage(
+        content=(
+            "Please read the instructions carefully.\n\n"
+            "When you are ready, you can click on Start to proceed with first patient case."
+            "If you prefer doing the task later, you can click on Exit to end your session."
+        ),
+        actions=[
+            cl.Action(
+                name="start_case",
+                payload={"value": "start", "case_index": 0},
+                label="Start Case 1",
+            ),
+            cl.Action(
+                name="exit_study",
+                payload={"value": "exit"},
+                label="Exit without starting",
+            ),
+        ],
+        timeout=3600,  # allow up to 1 hour to answer
+        raise_on_timeout=False,
+    ).send()
+
+    _log_line(f"Start screen AskAction response: {res}")
+
+    if not res:
+        _log_line("User did not answer AskAction at start (no response).")
+        await cl.Message(
+            content="Session ended before starting any case."
+        ).send()
+        return
+
+    payload = res.get("payload") or {}
+    value = payload.get("value")
+
+    if value == "exit":
+        _log_line("User chose to exit at start, no cases started.")
+        await cl.Message(
+            content="You chose to exit. No case has been started."
+        ).send()
+        # No cases started: mark session as finalized (0 completed)
+        total_sec = 0.0
+        user_obj = cl.user_session.get("user") or get_current_user()
+        if isinstance(user_obj, dict):
+            username = (
+                user_obj.get("name")
+                or user_obj.get("identifier")
+                or "unknown"
+            )
+        else:
+            username = (
+                getattr(user_obj, "identifier", None)
+                or getattr(user_obj, "name", None)
+                or "unknown"
+            )
+        n_cases_done = 0
+        await _force_client_redirect_to_thanks(
+            username, session_id, total_sec, n_cases_done
+        )
+        return
+
+    # Default: start case 1
+    case_index = int(payload.get("case_index", 0))
+    await _start_case(case_index)
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    df: pd.DataFrame = cl.user_session.get("questions_df")
-    agent: lr.ChatAgent = cl.user_session.get("ass_agent")
-    idx = cl.user_session.get("current_question_index", 0)
-    total = cl.user_session.get("total_questions", len(df) if df is not None else 0)
-    answers: dict = cl.user_session.get("answers") or {}
-    global model_responses
+    try:
+        # Gate: ignore user input until a case has started
+        if not cl.user_session.get("case_started", False):
+            await cl.Message(
+                content=(
+                    "Please click **Start Case 1** to begin the session. "
+                    "Your input has not been recorded."
+                )
+            ).send()
+            return
 
-    if df is None or len(df) == 0:
-        await cl.Message(content="No cases loaded.").send()
-        return
+        df: pd.DataFrame = cl.user_session.get("questions_df")
+        agent: lr.ChatAgent = cl.user_session.get("ass_agent")
+        idx = cl.user_session.get("current_question_index", 0)
+        total = cl.user_session.get("total_questions", len(df) if df is not None else 0)
+        answers: dict = cl.user_session.get("answers") or {}
+        global model_responses
 
-    if agent:
-        ChainlitAgentCallbacks(agent)
+        if df is None or len(df) == 0:
+            await cl.Message(content="No cases loaded.").send()
+            return
 
-    row = df.iloc[idx]
-    qid = row.get("note_id", idx + 1)
+        if agent:
+            ChainlitAgentCallbacks(agent)
 
-    content = message.content.strip()
-    upper = content.upper()
+        row = df.iloc[idx]
+        qid = row.get("note_id", idx + 1)
 
-    # EXIT -> partial finalize + marker
-    if upper.startswith("EXIT"):
-        t0 = cl.user_session.get("question_t0")
-        if t0 is not None:
-            sofar = perf_counter() - t0
-            _log_line(f"EXIT received. Elapsed so far on Q{idx + 1} (ID: {qid}): {sofar:.2f} sec")
+        content = message.content.strip()
+        upper = content.upper()
 
-        await _stop_streaming_and_optionally_close(close_agent=True)
-        await _finalize_session(df, list(answers.values()), partial=True, out_dir=OUT_DIR, model_name=ASS_MODEL_NAME)
+        # Log every incoming user message
+        _log_line(f"USER MESSAGE Q{idx + 1} (ID: {qid}): {content}")
 
-        total_sec = cl.user_session.get("session_total_sec") or 0.0
-        sess_id   = cl.user_session.get("session_id") or ""
-        user_obj  = cl.user_session.get("user") or get_current_user()
-        if isinstance(user_obj, dict):
-            username = user_obj.get("name") or user_obj.get("identifier") or "unknown"
-        else:
-            username = getattr(user_obj, "identifier", None) or getattr(user_obj, "name", None) or "unknown"
-        n_cases_done = len(answers)
+        # EXIT -> partial finalize + marker
+        if upper.startswith("EXIT"):
+            t0 = cl.user_session.get("question_t0")
+            if t0 is not None:
+                sofar = perf_counter() - t0
+                _log_line(
+                    f"EXIT received. Elapsed so far on Q{idx + 1} (ID: {qid}): {sofar:.2f} sec"
+                )
 
-        await cl.Message(content="Session ended. Thank you.").send()
-        await _force_client_redirect_to_thanks(username, sess_id, total_sec, n_cases_done)
-        return
+            # Log what has been discussed so far in this session
+            _log_conversation_snapshot(
+                prefix=f"On EXIT from Q{idx + 1} (ID: {qid})"
+            )
 
-    # FINAL ANSWER -> record, move to next
-    if upper.startswith("FINAL ANSWER:"):
-        final_answer = content.split(":", 1)[1].strip()
-        answers[qid] = final_answer
-        cl.user_session.set("answers", answers)
-        model_responses.append(final_answer)
-
-        elapsed = _q_stop_and_record(qid)
-        _log_line(f"FINAL ANSWER Q{idx + 1} (ID: {qid}): {final_answer}")
-        _log_line(f"Time for Q{idx + 1} (ID: {qid}): {elapsed:.2f} sec")
-       
-        # Acknowledge the answer and stop current task
-        await cl.Message(content=f"Thank you for your answer to Question {idx + 1}.").send()
-        await _stop_streaming_and_optionally_close(close_agent=False)
-
-        # optional: log conversation
-        try:
-            mh = getattr(agent, "message_history", None)
-            if mh and hasattr(mh, "messages"):
-                convo = []
-                for m in mh.messages:
-                    role = getattr(m, "role", None) or getattr(m, "sender", "assistant")
-                    text = getattr(m, "content", "")
-                    convo.append(f"{role}: {text}")
-                _log_line("\n".join(convo) + "\n")
-        except Exception:
-            pass
-
-        idx += 1
-        cl.user_session.set("current_question_index", idx)
-
-        if idx < total:
-            next_row = df.iloc[idx]
-            ass_prompt, phy_prompt = create_prompts(next_row)
-            next_agent = create_assistant_agent(ass_prompt)
-            cl.user_session.set("ass_agent", next_agent)
-            ChainlitAgentCallbacks(next_agent)
-
-            _q_start()
-            next_qid = next_row.get("note_id", idx + 1)
-            _log_line(f"Q{idx + 1} (ID: {next_qid}) started at {datetime.now().isoformat()}")
-
-            await add_instructions(title=f"Case {idx + 1}", content=dedent(phy_prompt))
-        else:
-            await _finalize_session(df, list(answers.values()), partial=False, out_dir=OUT_DIR, model_name=ASS_MODEL_NAME)
-            await _save_csv(df, list(answers.values()), out_dir=OUT_DIR, model_name=ASS_MODEL_NAME, final=True)
             await _stop_streaming_and_optionally_close(close_agent=True)
+            await _finalize_session(
+                df,
+                list(answers.values()),
+                partial=True,
+                out_dir=OUT_DIR,
+                model_name=ASS_MODEL_NAME,
+            )
 
             total_sec = cl.user_session.get("session_total_sec") or 0.0
-            sess_id   = cl.user_session.get("session_id") or ""
-            user_obj  = cl.user_session.get("user") or get_current_user()
+            sess_id = cl.user_session.get("session_id") or ""
+            user_obj = cl.user_session.get("user") or get_current_user()
             if isinstance(user_obj, dict):
-                username = user_obj.get("name") or user_obj.get("identifier") or "unknown"
+                username = (
+                    user_obj.get("name")
+                    or user_obj.get("identifier")
+                    or "unknown"
+                )
             else:
-                username = getattr(user_obj, "identifier", None) or getattr(user_obj, "name", None) or "unknown"
+                username = (
+                    getattr(user_obj, "identifier", None)
+                    or getattr(user_obj, "name", None)
+                    or "unknown"
+                )
             n_cases_done = len(answers)
 
-            await cl.Message(content="✅ All cases completed. Thank you!").send()
-            await _force_client_redirect_to_thanks(username, sess_id, total_sec, n_cases_done)
-        return  # important: don't fall through
+            await cl.Message(content="Session ended. Thank you.").send()
+            await _force_client_redirect_to_thanks(
+                username, sess_id, total_sec, n_cases_done
+            )
+            return
 
-    # Normal discussion with assistant
-    if not agent:
-        await cl.Message(content="Assistant not available at the moment.").send()
-        return
+        # FINAL ANSWER -> record, move to next or end
+        if upper.startswith("FINAL ANSWER:"):
+            final_answer = content.split(":", 1)[1].strip()
+            answers[qid] = final_answer
+            cl.user_session.set("answers", answers)
+            model_responses.append(final_answer)
 
-    task = asyncio.create_task(agent.llm_response_async(message.content))
-    cl.user_session.set("last_assistant_task", task)
-    try:
-        await task
-    finally:
+            elapsed = _q_stop_and_record(qid)
+            _log_line(
+                f"FINAL ANSWER Q{idx + 1} (ID: {qid}): {final_answer}"
+            )
+            _log_line(
+                f"Time for Q{idx + 1} (ID: {qid}): {elapsed:.2f} sec"
+            )
+
+            # Acknowledge the answer and stop current task
+            await cl.Message(
+                content=f"Thank you for your answer to Question {idx + 1}."
+            ).send()
+            await _stop_streaming_and_optionally_close(close_agent=False)
+
+            # Log the conversation up to this point
+            _log_conversation_snapshot(
+                prefix=f"After FINAL ANSWER for Q{idx + 1} (ID: {qid})"
+            )
+
+            idx += 1
+            cl.user_session.set("current_question_index", idx)
+
+            if idx < total:
+                # There are more cases: start next without re-showing full instructions
+                await cl.Message(
+                    content=(
+                        f"✅ Answer recorded for Question {idx}. "
+                        "Loading the next case..."
+                    )
+                ).send()
+                await _start_case(idx)
+                return  # ✅ prevent the LLM from answering the FINAL ANSWER message
+            else:
+                # Last case: ask user if they want to end session and go to thank you page
+                total_sec = cl.user_session.get("session_total_sec") or 0.0
+                sess_id = cl.user_session.get("session_id") or ""
+                user_obj = cl.user_session.get("user") or get_current_user()
+                if isinstance(user_obj, dict):
+                    username = (
+                        user_obj.get("name")
+                        or user_obj.get("identifier")
+                        or "unknown"
+                    )
+                else:
+                    username = (
+                        getattr(user_obj, "identifier", None)
+                        or getattr(user_obj, "name", None)
+                        or "unknown"
+                    )
+                n_cases_done = len(answers)
+
+                res = await cl.AskActionMessage(
+                    content=(
+                        "You have completed all cases.\n\n"
+                        "When you are ready, choose how to proceed."
+                    ),
+                    actions=[
+                        cl.Action(
+                            name="end_session",
+                            payload={"value": "end"},
+                            label="End session",
+                        ),
+                        cl.Action(
+                            name="stay",
+                            payload={"value": "stay"},
+                            label="Stay on this page",
+                        ),
+                    ],
+                    timeout=3600,
+                    raise_on_timeout=False,
+                ).send()
+
+                _log_line(f"End-of-session AskAction response: {res}")
+
+                if not res:
+                    # User closed the tab or did not answer; keep session open
+                    return
+
+                payload = res.get("payload") or {}
+                value = payload.get("value")
+
+                if value == "end":
+                    await _finalize_session(
+                        df,
+                        list(answers.values()),
+                        partial=False,
+                        out_dir=OUT_DIR,
+                        model_name=ASS_MODEL_NAME,
+                    )
+                    await _save_csv(
+                        df,
+                        list(answers.values()),
+                        out_dir=OUT_DIR,
+                        model_name=ASS_MODEL_NAME,
+                        final=True,
+                    )
+                    await _stop_streaming_and_optionally_close(close_agent=True)
+
+                    await cl.Message(
+                        content="✅ All cases completed. Thank you!"
+                    ).send()
+                    await _force_client_redirect_to_thanks(
+                        username, sess_id, total_sec, n_cases_done
+                    )
+                else:
+                    await cl.Message(
+                        content=(
+                            "You chose to stay on this page. "
+                            "The session remains open, and all cases are completed."
+                        )
+                    ).send()
+
+                return  # important: don't fall through
+
+        # Normal discussion with assistant
+        if not agent:
+            await cl.Message(
+                content="Assistant not available at the moment."
+            ).send()
+            return
+
+        task = asyncio.create_task(agent.llm_response_async(message.content))
         cl.user_session.set("last_assistant_task", task)
+        try:
+            await task
+        finally:
+            cl.user_session.set("last_assistant_task", task)
+
+    except Exception:
+        tb = traceback.format_exc()
+        _log_line(f"ERROR in on_message:\n{tb}")
+        raise
 
 @cl.on_stop
 async def _on_stop():
+    # Log whatever conversation we have up to this point
+    _log_conversation_snapshot(prefix="on_stop")
+
     await _stop_streaming_and_optionally_close(close_agent=True)
     df: pd.DataFrame = cl.user_session.get("questions_df")
     answers_dict = cl.user_session.get("answers") or {}
-    await _finalize_session(df, list(answers_dict.values()), partial=True, out_dir=OUT_DIR, model_name=ASS_MODEL_NAME)
+    await _finalize_session(
+        df,
+        list(answers_dict.values()),
+        partial=True,
+        out_dir=OUT_DIR,
+        model_name=ASS_MODEL_NAME,
+    )
 
 @cl.on_chat_end
 async def _on_chat_end():
+    # Log whatever conversation we have up to this point
+    _log_conversation_snapshot(prefix="on_chat_end")
+
     await _stop_streaming_and_optionally_close(close_agent=True)
     df: pd.DataFrame = cl.user_session.get("questions_df")
     answers_dict = cl.user_session.get("answers") or {}
-    await _finalize_session(df, list(answers_dict.values()), partial=True, out_dir=OUT_DIR, model_name=ASS_MODEL_NAME)
+    await _finalize_session(
+        df,
+        list(answers_dict.values()),
+        partial=True,
+        out_dir=OUT_DIR,
+        model_name=ASS_MODEL_NAME,
+    )
