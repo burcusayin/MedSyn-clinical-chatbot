@@ -136,6 +136,10 @@ def q_stop_and_record(qid) -> float:
     byq[str(qid)] = elapsed
     cl.user_session.set("elapsed_list", lst)
     cl.user_session.set("elapsed_by_qid", byq)
+
+    # Extra logging so every case time is visible in the log
+    log_line(f"Recorded elapsed time for question {qid}: {elapsed:.2f} sec")
+
     return elapsed
 
 

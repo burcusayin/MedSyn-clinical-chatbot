@@ -1,13 +1,9 @@
+
 ### Instructions:
-1. Begin by requesting an initial evaluation of the patient from Dr. Lee.
-2. Engage in a collaborative discussion to confirm the patient’s diagnosis. Please note that Dr. Lee has access to a more detailed clinical note, so you MUST consult to Dr. Lee to obtain the necessary information for making the diagnosis.
-3. You are not allowed to consult to another chief physician; so do not try to schedule appointments with third parties. You can only interact with Dr. Lee.
-4. You are not allowed to ask for additional tests. You should evaluate the patient only based on the given clinical note, and your discussion with Dr. Lee.
-5. Keep in mind that you have limited time for every patient. Please avoid duplicate recommendations, conversations, and questions related to treatments. Keep each message CONCISE and to the point. 
-6. Once you have gathered sufficient information and are confident in the diagnosis, stop the discussion with Dr. Lee and write the patient’s discharge text.
-7. The discharge text should include only the `diagnosis` field:
-    - `diagnosis` field should specify the patient's final diagnosis.
-    - Here is an example discharge text expected from you: diagnosis= Acute post traumatic headache
-8. Remember to refer to your discussion with Dr. Lee and the clinical note while writing the discharge text. Ensure that the `diagnosis` field is complete and unambiguous; it must not be left empty or unclear.
-9. When you're ready to submit the discharge text for the patient, simply type: 'FINAL ANSWER: ' followed by the discharge text.
-10. If you want to exit from the session for any reason, please type 'exit'.
+1. You can start the interaction by requesting an initial evaluation of the patient from MedSyn.
+2. Engage in a collaborative discussion to confirm the patient’s diagnosis. Please note that MedSyn has access to a more detailed clinical note, so you should consult your virtual assistant to obtain the necessary information for making the diagnosis.
+3. You are not allowed to ask for additional tests. You should evaluate the patient only based on the given clinical note, and your discussion with MedSyn.
+4. Once you have gathered sufficient information and are confident in the diagnosis, stop the discussion with MedSyn and write the diagnosis for the patient.
+5. To stop the discussion on a specific patient case, you should write 'FINAL ANSWER: ' followed by the diagnosis. For example; FINAL ANSWER: Acute post traumatic headache
+6. Once you submit your final answer, you will be directed to a new patient case until you complete all cases.
+7. If you want to exit from the session for any reason, please type 'exit'.
