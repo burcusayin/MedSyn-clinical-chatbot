@@ -1,5 +1,3 @@
-**Here is the clinical note for the patient:** '''{clinicalNote}'''.
-
 ### Instructions:
 1. Begin by requesting an initial evaluation of the patient from Dr. Lee.
 2. Engage in a collaborative discussion to confirm the patient’s diagnosis. Please note that Dr. Lee has access to a more detailed clinical note, so you MUST consult to Dr. Lee to obtain the necessary information for making the diagnosis.
