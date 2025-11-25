@@ -1,4 +1,3 @@
-# src/clinical_chatbot/app.py
 import os
 import inspect
 from pathlib import Path
@@ -14,10 +13,10 @@ import langroid as lr
 import langroid.language_models as lm
 from langroid.agent.callbacks.chainlit import add_instructions, ChainlitAgentCallbacks
 
-import src.clinical_chatbot.health
+import src.clinical_chatbot.health  # noqa: F401
 from src.physician_agent import PhysicianModel
 from src.assistant_agent import AssistantModel
-from src.utils import read_prompt_from_file, serialize_dict
+from src.utils import read_prompt_from_file, serialize_dict  # noqa: F401
 
 from src.clinical_chatbot.db import get_conn
 from src.clinical_chatbot.auth import verify_password, ensure_admin
@@ -45,7 +44,7 @@ PROMPTS_DIR    = Path(os.getenv("PROMPT"))
 OUT_DIR        = Path(os.getenv("OUT_DIR"))
 
 INPUT_DATA_FILE = os.getenv("INPUT_DATA_FILE")
-SAMPLE_SIZE     = int(os.getenv("SAMPLE_SIZE"))
+SAMPLE_SIZE     = int(os.getenv("SAMPLE_SIZE", "0") or "0")
 
 PHY_MODEL       = os.getenv("PHY_MODEL")
 ASS_MODEL       = os.getenv("ASS_MODEL")
@@ -170,8 +169,11 @@ async def _force_client_redirect_to_thanks(
     sess_id: str,
     total_sec: float,
     n_cases_done: int,
-):
-    """Send a special marker message that the frontend JS uses to auto-redirect to the thank you page."""
+) -> None:
+    """
+    Send a special marker message that the frontend JS uses
+    to auto-redirect to the thank you page.
+    """
     await cl.Message(
         content=(
             f"[[AUTO_LOGOUT::{username or 'unknown'}::{sess_id or ''}::"
@@ -182,7 +184,9 @@ async def _force_client_redirect_to_thanks(
     await asyncio.sleep(0.05)
 
 def _log_conversation_snapshot(prefix: str = "") -> None:
-    """Log the current agent.message_history (user + LLM messages) to the session log."""
+    """
+    Log the current agent.message_history (user + LLM messages) to the session log.
+    """
     agent = cl.user_session.get("ass_agent")
     if not agent:
         return
@@ -214,6 +218,33 @@ def _log_conversation_snapshot(prefix: str = "") -> None:
         # Never break the app because logging failed
         pass
 
+async def _agent_respond_and_log(
+    agent: lr.ChatAgent,
+    user_text: str,
+    idx: int,
+    qid,
+) -> None:
+    """
+    Wrap agent.llm_response_async to both stream to the UI (via
+    ChainlitAgentCallbacks) and log the final LLM response text.
+    """
+    try:
+        resp = await agent.llm_response_async(user_text)
+        # Try to extract text from the response object
+        text = None
+        for attr in ("content", "text", "message", "msg"):
+            if hasattr(resp, attr):
+                text = getattr(resp, attr)
+                break
+        if text is None:
+            text = str(resp) if resp is not None else "<empty response>"
+
+        _log_line(f"LLM MESSAGE Q{idx + 1} (ID: {qid}): {text}")
+    except asyncio.CancelledError:
+        # Streaming cancelled (stop button etc.) - just propagate
+        raise
+    except Exception as e:
+        _log_line(f"ERROR logging LLM response for Q{idx + 1} (ID: {qid}): {e!r}")
 
 async def _start_case(idx: int) -> None:
     """Initialize and start the given case index (0-based)."""
@@ -230,7 +261,6 @@ async def _start_case(idx: int) -> None:
     cl.user_session.set("current_question_index", idx)
 
     row = df.iloc[idx]
-
     ass_prompt, ass_clinical_note, phy_prompt, phy_clinical_note = create_prompts(row)
     agent = create_assistant_agent(ass_prompt)
     cl.user_session.set("ass_agent", agent)
@@ -276,7 +306,8 @@ async def on_chat_start():
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     safe_user, safe_sess = _get_session_meta_for_filename()
-    log_path = LOG_DIR / f"chat__{safe_user}__{safe_sess}.log"
+    date_str = datetime.now().strftime("%Y%m%d")
+    log_path = LOG_DIR / f"chat__{date_str}__{safe_user}__{safe_sess}.log"
 
     # Configure logging for this session
     root = logging.getLogger()
@@ -304,6 +335,7 @@ async def on_chat_start():
 
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(f"Session started: {datetime.now().isoformat()}\n")
+        f.write(f"Session ID: {session_id}\n")
         f.write(f"Total questions in session: {len(df)}\n\n")
 
     # Build and show instructions from the first case, but DO NOT start the agent yet
@@ -311,7 +343,7 @@ async def on_chat_start():
     ass_prompt, ass_clinical_note, phy_prompt, phy_clinical_note = create_prompts(first_row)
 
     await add_instructions(
-        title="Welcome to Clinical Chatbot!",
+        title="Welcome to MedSyn!",
         content=dedent(phy_prompt),
     )
 
@@ -321,7 +353,7 @@ async def on_chat_start():
     res = await cl.AskActionMessage(
         content=(
             "Please read the instructions carefully.\n\n"
-            "When you are ready, you can click on Start to proceed with first patient case."
+            "When you are ready, you can click on Start to proceed with first patient case. "
             "If you prefer doing the task later, you can click on Exit to end your session."
         ),
         actions=[
@@ -502,10 +534,10 @@ async def on_message(message: cl.Message):
                     )
                 ).send()
                 await _start_case(idx)
-                return  # ✅ prevent the LLM from answering the FINAL ANSWER message
+                return  # don't let the LLM answer the FINAL ANSWER message
             else:
                 # Last case: ask user if they want to end session and go to thank you page
-                total_sec = cl.user_session.get("session_total_sec") or 0.0
+                # Last case: ask user if they want to end session and go to thank you page
                 sess_id = cl.user_session.get("session_id") or ""
                 user_obj = cl.user_session.get("user") or get_current_user()
                 if isinstance(user_obj, dict):
@@ -531,7 +563,7 @@ async def on_message(message: cl.Message):
                         cl.Action(
                             name="end_session",
                             payload={"value": "end"},
-                            label="End session",
+                            label="End session and go to thank you page",
                         ),
                         cl.Action(
                             name="stay",
@@ -553,6 +585,7 @@ async def on_message(message: cl.Message):
                 value = payload.get("value")
 
                 if value == "end":
+                    # 1) Finalize -> this sets session_total_sec in user_session
                     await _finalize_session(
                         df,
                         list(answers.values()),
@@ -568,6 +601,9 @@ async def on_message(message: cl.Message):
                         final=True,
                     )
                     await _stop_streaming_and_optionally_close(close_agent=True)
+
+                    # 2) NOW read the total session time
+                    total_sec = cl.user_session.get("session_total_sec") or 0.0
 
                     await cl.Message(
                         content="✅ All cases completed. Thank you!"
@@ -585,6 +621,7 @@ async def on_message(message: cl.Message):
 
                 return  # important: don't fall through
 
+
         # Normal discussion with assistant
         if not agent:
             await cl.Message(
@@ -592,7 +629,10 @@ async def on_message(message: cl.Message):
             ).send()
             return
 
-        task = asyncio.create_task(agent.llm_response_async(message.content))
+        # Run LLM, stream to UI (via ChainlitAgentCallbacks) and log response text
+        task = asyncio.create_task(
+            _agent_respond_and_log(agent, message.content, idx, qid)
+        )
         cl.user_session.set("last_assistant_task", task)
         try:
             await task
