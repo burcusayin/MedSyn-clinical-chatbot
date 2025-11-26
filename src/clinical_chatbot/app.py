@@ -590,7 +590,7 @@ async def on_message(message: cl.Message):
                 res = await cl.AskActionMessage(
                     content=(
                         "You have completed all cases.\n\n"
-                        "When you are ready, choose how to proceed."
+                        "Please choose how to proceed."
                     ),
                     actions=[
                         cl.Action(

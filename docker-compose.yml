@@ -17,10 +17,11 @@ services:
       - ./public:/srv/public:ro                               # your static pages
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/nginx-health || exit 1"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health"]
       interval: 10s
-      timeout: 3s
-      retries: 5
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   web:
     build:
@@ -53,6 +54,7 @@ services:
     restart: unless-stopped
     environment:
       - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_NUM_CTX=8192
     volumes:
       - ollama:/root/.ollama
     gpus: all
