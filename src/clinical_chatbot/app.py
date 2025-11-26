@@ -332,6 +332,8 @@ async def on_chat_start():
     cl.user_session.set("session_t0", perf_counter())
     cl.user_session.set("last_assistant_task", None)
     cl.user_session.set("case_started", False)  # gate input until Start Case 1
+    cl.user_session.set("session_completed", False)
+
 
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(f"Session started: {datetime.now().isoformat()}\n")
@@ -389,6 +391,8 @@ async def on_chat_start():
         await cl.Message(
             content="You chose to exit. No case has been started."
         ).send()
+        cl.user_session.set("case_started", False)
+        cl.user_session.set("session_completed", True)
         # No cases started: mark session as finalized (0 completed)
         total_sec = 0.0
         user_obj = cl.user_session.get("user") or get_current_user()
@@ -417,6 +421,16 @@ async def on_chat_start():
 @cl.on_message
 async def on_message(message: cl.Message):
     try:
+        # If session has been marked as completed, block further input
+        if cl.user_session.get("session_completed", False):
+            await cl.Message(
+                content=(
+                    "This session has already ended. "
+                    "Please refresh the page to start a new session."
+                )
+            ).send()
+            return
+
         # Gate: ignore user input until a case has started
         if not cl.user_session.get("case_started", False):
             await cl.Message(
@@ -438,6 +452,22 @@ async def on_message(message: cl.Message):
             await cl.Message(content="No cases loaded.").send()
             return
 
+        # Defensive: ensure index is within bounds of the dataframe
+        if idx < 0 or idx >= len(df):
+            _log_line(
+                f"Received message for out-of-range case index {idx} "
+                f"(total cases: {len(df)}). Treating as session already completed."
+            )
+            await cl.Message(
+                content=(
+                    "You have already completed all cases in this session. "
+                    "If you wish to start a new session, please refresh the page."
+                )
+            ).send()
+            cl.user_session.set("session_completed", True)
+            cl.user_session.set("case_started", False)
+            return
+        
         if agent:
             ChainlitAgentCallbacks(agent)
 
@@ -489,6 +519,9 @@ async def on_message(message: cl.Message):
                     or "unknown"
                 )
             n_cases_done = len(answers)
+            
+            cl.user_session.set("session_completed", True)
+            cl.user_session.set("case_started", False)
 
             await cl.Message(content="Session ended. Thank you.").send()
             await _force_client_redirect_to_thanks(
@@ -563,7 +596,7 @@ async def on_message(message: cl.Message):
                         cl.Action(
                             name="end_session",
                             payload={"value": "end"},
-                            label="End session and go to thank you page",
+                            label="End session",
                         ),
                         cl.Action(
                             name="stay",
@@ -601,6 +634,9 @@ async def on_message(message: cl.Message):
                         final=True,
                     )
                     await _stop_streaming_and_optionally_close(close_agent=True)
+                    
+                    cl.user_session.set("session_completed", True)
+                    cl.user_session.set("case_started", False)
 
                     # 2) NOW read the total session time
                     total_sec = cl.user_session.get("session_total_sec") or 0.0
@@ -615,9 +651,13 @@ async def on_message(message: cl.Message):
                     await cl.Message(
                         content=(
                             "You chose to stay on this page. "
-                            "The session remains open, and all cases are completed."
+                            "All cases are completed and this session is now finished. "
+                            "You can close this tab or refresh to start a new session."
                         )
                     ).send()
+                    
+                    cl.user_session.set("session_completed", True)
+                    cl.user_session.set("case_started", False)
 
                 return  # important: don't fall through
 

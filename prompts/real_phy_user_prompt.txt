@@ -1,6 +1,6 @@
 
 ### Instructions:
-1. You can start the interaction by requesting an initial evaluation of the patient from MedSyn.
+1. You can start the discussion by requesting an initial evaluation of the patient from MedSyn.
 2. Engage in a collaborative discussion to confirm the patient’s diagnosis. Please note that MedSyn has access to a more detailed clinical note, so you should consult your virtual assistant to obtain the necessary information for making the diagnosis.
 3. You are not allowed to ask for additional tests. You should evaluate the patient only based on the given clinical note, and your discussion with MedSyn.
 4. Once you have gathered sufficient information and are confident in the diagnosis, stop the discussion with MedSyn and write the diagnosis for the patient.
