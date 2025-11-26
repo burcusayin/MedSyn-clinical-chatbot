@@ -86,7 +86,9 @@ reaction_on_message_received = false
 
 [UI]
 # Name of the assistant.
-name = "Assistant"
+name = "MedSyn"
+
+default_language = "en"
 
 # default_theme = "dark"
 
@@ -95,7 +97,7 @@ name = "Assistant"
 # default_sidebar_state = "open"
 
 # Description of the assistant. This is used for HTML tags.
-# description = ""
+description = "MedSyn: virtual clinical assistant"
 
 # Chain of Thought (CoT) display mode. Can be "hidden", "tool_call" or "full".
 cot = "full"
