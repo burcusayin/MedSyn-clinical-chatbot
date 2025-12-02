@@ -4,7 +4,6 @@
 set -Eeuo pipefail
 
 # ---------- Config (override via env vars when calling the script) ----------
-MAIN_DIR="${MAIN_DIR:-/home/gunel/medSyn/}"
 APP_REL="${APP_REL:-src/clinical_chatbot/app.py}"      # path to your Chainlit entry file
 ENV_FILE="${ENV_FILE:-src/clinical_chatbot/.env}"      # .env with app settings
 HOST="${HOST:-127.0.0.1}"

@@ -3,8 +3,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MAIN_DIR="/home/gunel/medSyn/"
-
 # Go to project root
 [[ -d "$MAIN_DIR" ]] || die "MAIN_DIR not found: $MAIN_DIR"
 cd "$MAIN_DIR"
