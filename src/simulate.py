@@ -2,14 +2,13 @@ import pandas as pd
 from tqdm import tqdm
 import json
 from argparse import ArgumentParser
-from .physician_agent import PhysicianModel
-from .assistant_agent import AssistantModel
-from .baseline_agent import BaselineModel
-from .langroid_endpoint import MainChatAgent
-from .utils import read_prompt_from_file
-from .chat_with_chainlit import *
+from src.physician_agent import PhysicianModel
+from src.assistant_agent import AssistantModel
+from src.baseline_agent import BaselineModel
+from src.langroid_endpoint import MainChatAgent
+from src.utils import read_prompt_from_file
         
-if __name__ == "__main__":
+def main():
     parser = ArgumentParser()
     parser.add_argument('--input_file')
     parser.add_argument('--history_file')
@@ -26,6 +25,12 @@ if __name__ == "__main__":
     parser.add_argument('--phy_prompt_template')
     parser.add_argument('--ass_system_prompt')
     parser.add_argument('--ass_prompt_template')
+    parser.add_argument(
+        '--num_rows',
+        type=int,
+        default=None,
+        help='If set, only use the first N rows from the input file (for quick tests).',
+    )
 
     args = parser.parse_args()
 
@@ -44,13 +49,28 @@ if __name__ == "__main__":
     phy_prompt_template = args.phy_prompt_template
     ass_system_prompt = args.ass_system_prompt
     ass_prompt_template = args.ass_prompt_template
-    
+    num_rows = args.num_rows
 
-    discharge_data = pd.read_csv(input_file)[:2]
-    #discharge_data = discharge_data.drop([discharge_data.index[128]])
+    # Load data
+    discharge_data = pd.read_csv(input_file)
+    if num_rows is not None:
+        discharge_data = discharge_data.head(num_rows)
+
     discharge_data = discharge_data.reset_index(drop=True)
-    discharge_data = discharge_data[["note_id", "subject_id", "_id", "icd10_proc", "icd10_diag", "chief_complaint", "history", "physical_exam", "results", "discharge diagnosis", "discharge condition", "discharge instructions"]]
-    
+    discharge_data = discharge_data[
+        [
+            # adapt these to your actual CSV columns:
+            "Dataset",
+            "note_id",
+            "Difficulty",
+            "chief_complaint",
+            "history",
+            "physical_exam",
+            "results",
+            "discharge diagnosis",
+        ]
+    ]
+
     model_responses = []
     if use_case == "phy_baseline":
         print("Use case is phy_baseline...")
@@ -68,7 +88,7 @@ if __name__ == "__main__":
             model_responses.append(response)
             hist[index] = str(history)
         discharge_data["model_output"] = model_responses
-        discharge_data.to_csv(discharge_data_file + 'output_phy_baseline_{}.csv'.format(baseline_model_name),index = False)
+        discharge_data.to_csv(discharge_data_file + 'output_phy_baseline_{}.csv'.format(baseline_model_name.split('/')[-1]),index = False)
         histJson = history_file + "{}_{}.json".format(use_case, baseline_model_name)
         with open(histJson, "w") as outfile: 
             json.dump(hist, outfile)
@@ -91,8 +111,8 @@ if __name__ == "__main__":
             model_responses.append(response)
             hist[index] = str(history)
         discharge_data["model_output"] = model_responses
-        discharge_data.to_csv(discharge_data_file + 'output_ass_baseline_{}.csv'.format(baseline_model_name),index = False)
-        histJson = history_file + "{}_{}.json".format(use_case, baseline_model_name)
+        discharge_data.to_csv(discharge_data_file + 'output_ass_baseline_{}.csv'.format(baseline_model_name.split('/')[-1]),index = False)
+        histJson = history_file + "{}_{}.json".format(use_case, baseline_model_name.split('/')[-1])
         with open(histJson, "w") as outfile: 
             json.dump(hist, outfile)
     elif use_case == "interactive":
@@ -127,9 +147,9 @@ if __name__ == "__main__":
             ass_dial_hist[index] = str(ass_history)
             
         discharge_data['model_output'] = model_responses
-        discharge_data.to_csv(discharge_data_file + 'output_interactive_ass_{}.csv'.format(ass_model_name),index = False)
+        discharge_data.to_csv(discharge_data_file + 'output_interactive_ass_{}.csv'.format(ass_model_name.split('/')[-1]),index = False)
         
-        assHistJson = ass_history_file + "{}_ass_{}.json".format(use_case, ass_model_name)
+        assHistJson = ass_history_file + "{}_ass_{}.json".format(use_case, ass_model_name.split('/')[-1])
         with open(assHistJson, "w") as outfile: 
             json.dump(ass_dial_hist, outfile)
     
@@ -168,12 +188,15 @@ if __name__ == "__main__":
             ass_dial_hist[index] = str(ass_history)
             
         discharge_data['model_output'] = model_responses
-        discharge_data.to_csv(discharge_data_file + 'output_phy_{}_ass_{}.csv'.format(phy_model_name,ass_model_name),index = False)
+        discharge_data.to_csv(discharge_data_file + 'output_phy_{}_ass_{}.csv'.format(phy_model_name.split('/')[-1],ass_model_name.split('/')[-1]),index = False)
         
-        phyHistJson = phy_history_file + "{}_phy_{}_ass_{}.json".format(use_case, phy_model_name, ass_model_name)
+        phyHistJson = phy_history_file + "{}_phy_{}_ass_{}.json".format(use_case, phy_model_name.split('/')[-1], ass_model_name.split('/')[-1])
         with open(phyHistJson, "w") as outfile: 
             json.dump(phy_dial_hist, outfile)
         
-        assHistJson = ass_history_file + "{}_ass_{}_phy_{}.json".format(use_case, ass_model_name, phy_model_name)
+        assHistJson = ass_history_file + "{}_ass_{}_phy_{}.json".format(use_case, ass_model_name.split('/')[-1], phy_model_name.split('/')[-1])
         with open(assHistJson, "w") as outfile: 
             json.dump(ass_dial_hist, outfile)
+            
+if __name__ == "__main__":
+    main()

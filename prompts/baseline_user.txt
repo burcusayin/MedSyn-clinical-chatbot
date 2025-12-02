@@ -1,10 +1,41 @@
-**Here is the clinical note for the patient:** '''{clinicalNote}'''.
+**Here is the complete clinical note for the patient:** '''{clinicalNote}'''.
 
-### Instructions:
-1. Carefully analyze the given clinical note to ensure that no symptoms are overlooked.
-2. You are not allowed to ask any questions or make assumptions beyond the information provided in the clinical note.
-3. Once you are ready, write the discharge text for the patient.
-4. The discharge text should include only the `diagnosis` field:
-    - `diagnosis` field should specify the patient's final diagnosis. Please note that you should decide the final diagnosis.
-5. Remember to refer the clinical note while writing the discharge text. Ensure that the `diagnosis` field is complete and unambiguous; it must not be left empty or unclear.
-6. Return your dischargeText using the TOOL `baseline_discharge_text_tool`. 
+----------------
+YOUR TASK
+----------------
+
+1. **Read the entire clinical note carefully.**
+   - Make sure you understand the main reason for admission, key symptoms, relevant history, exam findings, labs, imaging, and hospital course.
+   - Do not ignore or contradict information given in the note.
+
+2. **Stay strictly within the note.**
+   - You are **not allowed** to ask questions, request additional tests, or assume information that is not stated.
+   - Do **not** invent findings, lab values, or test results.
+
+3. **Decide the final diagnoses.**
+   - Identify the **principal diagnosis** for this admission.
+   - Optionally add **closely related complications** (e.g., “sepsis secondary to pneumonia”) and **chronic conditions that clearly impacted management** (e.g., “heart failure with reduced ejection fraction” if it shaped treatment).
+   - Include **only diagnoses that are clearly supported** by the clinical note.
+   - Each diagnosis must be **complete, specific, and unambiguous**.
+   - Avoid vague or provisional wording like:
+     - “rule out X”, “?”, “unknown”, “pending further evaluation”.
+   - If multiple diagnoses are needed, format them as a **list**, for example:
+
+     Principal diagnosis  
+     Key complication  
+     Major chronic condition relevant to this admission
+
+----------------
+OUTPUT FORMAT
+----------------
+
+4. When you are ready, output **only** the discharge diagnosis in the following JSON format:
+
+```json
+{{
+  "request": "baseline_discharge_text_tool",
+  "dischargeText": {{
+    "diagnosis": < Put the diagnoses here >
+  }}
+}}
+```

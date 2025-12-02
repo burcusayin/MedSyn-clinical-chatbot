@@ -1,12 +1,34 @@
-### Instructions:
-1. Begin by requesting an initial evaluation of the patient from Dr. Lee.
-2. Engage in a collaborative discussion to confirm the patient’s diagnosis. Please note that Dr. Lee has access to a more detailed clinical note, so you MUST consult to Dr. Lee to obtain the necessary information for making the diagnosis.
-3. You are not allowed to consult to another chief physician; so do not try to schedule appointments with third parties. You can only interact with Dr. Lee.
-4. You are not allowed to ask for additional tests. You should evaluate the patient only based on the given clinical note, and your discussion with Dr. Lee.
-5. Keep in mind that you have limited time for every patient. Please avoid duplicate recommendations, conversations, and questions related to treatments. Keep each message CONCISE and to the point. 
-6. Once you have gathered sufficient information and are confident in the diagnosis, stop the discussion with Dr. Lee and write the patient’s discharge text.
-7. The discharge text should include only the `diagnosis` field:
-    - `diagnosis` field should specify the patient's final diagnosis. Please note that you should decide the final diagnosis.
-8. Remember to refer to your discussion with Dr. Lee and the clinical note while writing the discharge text. Ensure that the `diagnosis` field is complete and unambiguous; it must not be left empty or unclear.
-9. Do NOT ask Dr. Lee to check or write your dischargeText. It is YOUR RESPONSIBILITY to write and submit the dischargeText.
-10. Return your dischargeText using the TOOL `discharge_text_tool`. Do NOT mention the TOOL `discharge_text_tool` to Dr. Lee.
+**Here is the clinical note for the current patient:** '''{clinicalNote}'''.
+
+Follow this strict protocol to complete the task:
+
+1. FIRST MESSAGE (MANDATORY)
+   - Your very first message in the conversation must be addressed to MedSyn.
+   - In that message, explicitly ask MedSyn for an **initial evaluation**, including:
+     - key symptoms and exam findings
+     - a short list of likely diagnoses 
+     - possible complications
+     - brief recommendations.
+
+2. FOLLOW-UP WITH MedSyn (OPTIONAL)
+   - After MedSyn replies, you may send MedSyn **follow-up messages** with specific clinical questions (e.g., “Is there evidence of NSTEMI?”, “Is heart failure described as acute on chronic?”).
+   - Each time, wait for MedSyn’s answer and then decide if you have enough information to finalize the discharge diagnoses.
+
+3. FINAL STEP – CALLING THE TOOL (MANDATORY)
+   - Once you are satisfied, you must produce a single, final message that contains the discharge diagnoses. If there is only one diagnosis, simply provide a line. Otherwise, provide a **list**, one diagnosis per line, e.g.:
+       Right lower lobe community-acquired pneumonia
+       COPD exacerbation
+   - Focus on the **acute problems that explain the admission** and key acute complications.
+   - Add **chronic conditions** only if they clearly influenced management during this admission (e.g., heart failure, COPD, diabetes, bioprosthetic valves), and list them AFTER the acute problems.
+   - Once the diagnosis is ready, request "discharge_text_tool" with the following JSON format:
+       ```json
+       {{
+         "request": "discharge_text_tool",
+         "dischargeText": {{
+           "diagnosis": < Put the diagnoses here >
+         }}
+       }}
+       ```
+   - The "diagnosis" field MUST contain ONLY diagnoses. Do NOT include meta-text like "placeholder", "awaiting further details", etc.
+   - NEVER call "discharge_text_tool" before you have received at least one reply from MedSyn.
+   - NEVER call "discharge_text_tool" with placeholder or non-diagnostic text.

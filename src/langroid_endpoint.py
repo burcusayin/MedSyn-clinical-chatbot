@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from langroid.utils.configuration import settings
 from langroid.agent.tools.orchestration import ForwardTool, ResultTool
 from langroid.agent.task import TaskConfig
-from .utils import serialize_dict
+from src.utils import serialize_dict
 from langroid.language_models import Role, LLMMessage
 from rich.prompt import Prompt 
 
@@ -20,8 +20,7 @@ PA_NAME = "PA"
 
 
 class DischargeText(BaseModel):
-    diagnosis: str = Field(..., description="final diagnosis relevant to the patient's condition at the time of discharge")
-    codes: str = Field(..., description="ICD-10 codes corresponding to the patient's diagnosis")     
+    diagnosis: str = Field(..., description="final diagnosis relevant to the patient's condition at the time of discharge")   
     
 class BaselineDischargeTextTool(lr.ToolMessage):
     """Write the discharge text for a patient"""
@@ -50,7 +49,7 @@ class BaselineDischargeTextTool(lr.ToolMessage):
         In this case we remind the agent to use discharge_text_tool.
         """ 
 
-        return f"""You must use the TOOL {BaselineDischargeTextTool.name()} to write the dischargeText. Please check the required format carefully, and do not forget to include "request": "baseline_discharge_text_tool".  Remember that the dischargeText should include `diagnosis` and `codes` fields  only. Both fields must be strings; do not add [] for the codes."""
+        return f"""You must use the TOOL {BaselineDischargeTextTool.name()} to write the dischargeText. Please check the required format carefully, and do not forget to include "request": "baseline_discharge_text_tool".  Remember that the dischargeText should include `diagnosis` field only. The field must be string."""
 
         #llama models
         #return f"""You must use the TOOL {BaselineDischargeTextTool.name()} to write the dischargeText. Please check the required format carefully, and do not forget to close the brackets you used."""
@@ -109,27 +108,86 @@ class MainChatAgent:
             self.create_interactive_agent(phy_prompt, ass_prompt)
         else:
             self.create_two_agents(phy_prompt, ass_prompt)
-        
-    def create_single_agent(self, phy_prompt:str):
+            
+    def _resolve_chat_model(self, model_id: str) -> str:
+        """
+        Normalize model ids so we can transparently use either local Ollama
+        models ("phi3", "gemma2:9b", ...) or remote OpenRouter models
+        ("openrouter/openai/gpt-oss-20b:free", "openrouter/openai/gpt-5.1", ...).
+
+        - If the id already contains a slash "/", we assume it is a full
+          provider/model slug and use it as-is.
+        - Otherwise we treat it as an Ollama model and prefix "ollama/"
+          to keep backwards compatibility with the current setup.
+        """
+        if "/" in model_id:
+            return model_id
+        return f"ollama/{model_id}"
+              
+    def create_single_agent(self, phy_prompt: str):
         print("Creating single agent environment...")
-        self.phy_lm_config = lm.OpenAIGPTConfig(chat_model="ollama/"+self.phy_model_id,chat_context_length=1040_000, seed=self.random_seed)
-        self.phy_agent = lr.ChatAgent(lr.ChatAgentConfig(name=CP_NAME, llm=self.phy_lm_config, system_message=phy_prompt)) 
+        self.phy_lm_config = lm.OpenAIGPTConfig(
+            chat_model=self._resolve_chat_model(self.phy_model_id),
+            chat_context_length=104_000,
+            seed=self.random_seed,
+        )
+        self.phy_agent = lr.ChatAgent(
+            lr.ChatAgentConfig(
+                name=CP_NAME,
+                llm=self.phy_lm_config,
+                system_message=phy_prompt,
+            )
+        )
+        # Single agent baseline uses the simplified BaselineDischargeTextTool
         self.phy_agent.enable_message(BaselineDischargeTextTool)
-    
-    def create_interactive_agent(self, phy_prompt, ass_prompt):
-        self.ass_lm_config = lm.OpenAIGPTConfig(chat_model="ollama/"+self.ass_model_id,chat_context_length=1040_000, seed=self.random_seed)
-        self.ass_agent = lr.language_models.OpenAIGPT(self.ass_lm_config)
+
+        
+    def create_interactive_agent(self, phy_prompt: str, ass_prompt: str):
+        # Assistant LLM (sees the full note), physician is a human typing
+        self.ass_lm_config = lm.OpenAIGPTConfig(
+            chat_model=self._resolve_chat_model(self.ass_model_id),
+            chat_context_length=104_000,
+            seed=self.random_seed,
+        )
+        # Direct LLM wrapper, because we manage messages manually in start_interactive_chat
+        self.ass_agent = lm.OpenAIGPT(self.ass_lm_config)
         self.ass_prompt = ass_prompt
         self.phy_prompt = phy_prompt
-        
-    def create_two_agents(self, phy_prompt:str, ass_prompt:str=""):
+  
+    
+    def create_two_agents(self, phy_prompt: str, ass_prompt: str = ""):
         print("Creating  two-agent environment...")
-        #tried setting temperature=0 but did not work
-        self.ass_lm_config = lm.OpenAIGPTConfig(chat_model="ollama/"+self.ass_model_id,chat_context_length=1040_000, seed=self.random_seed)
-        self.ass_agent = lr.ChatAgent(lr.ChatAgentConfig(name=PA_NAME, llm=self.ass_lm_config, system_message=ass_prompt)) 
-        self.phy_lm_config = lm.OpenAIGPTConfig(chat_model="ollama/"+self.phy_model_id,chat_context_length=1040_000, seed=self.random_seed)
-        self.phy_agent = lr.ChatAgent(lr.ChatAgentConfig(name=CP_NAME, llm=self.phy_lm_config, system_message=phy_prompt)) 
+
+        # Assistant agent (full clinical note)
+        self.ass_lm_config = lm.OpenAIGPTConfig(
+            chat_model=self._resolve_chat_model(self.ass_model_id),
+            chat_context_length=104_000,
+            seed=self.random_seed,
+        )
+        self.ass_agent = lr.ChatAgent(
+            lr.ChatAgentConfig(
+                name=PA_NAME,
+                llm=self.ass_lm_config,
+                system_message=ass_prompt,
+            )
+        )
+
+        # Physician agent (chief complaint only)
+        self.phy_lm_config = lm.OpenAIGPTConfig(
+            chat_model=self._resolve_chat_model(self.phy_model_id),
+            chat_context_length=104_000,
+            seed=self.random_seed,
+        )
+        self.phy_agent = lr.ChatAgent(
+            lr.ChatAgentConfig(
+                name=CP_NAME,
+                llm=self.phy_lm_config,
+                system_message=phy_prompt,
+            )
+        )
+        # Two-agent setup uses the full DischargeTextTool
         self.phy_agent.enable_message(DischargeTextTool)
+
         
     def format_history(self, agent_history):
         processed_history = []

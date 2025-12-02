@@ -47,6 +47,10 @@ p  { margin: 0 0 18px; color: var(--muted); }
 }
 .summary li:last-child { border-bottom: none; }
 
+.survey {
+  margin-top: 20px;
+}
+
 .actions {
   margin-top: 20px;
   display: flex;

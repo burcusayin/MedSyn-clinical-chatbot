@@ -51,7 +51,17 @@ ASS_MODEL       = os.getenv("ASS_MODEL")
 PHY_MODEL_NAME  = os.getenv("PHY_MODEL_NAME")
 ASS_MODEL_NAME  = os.getenv("ASS_MODEL_NAME")
 
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")  # default for Docker
+# Which backend to use for the assistant LLM:
+#   - "ollama"    (default): use the Ollama sidecar
+#   - "vllm"      : use a vLLM OpenAI-compatible server at VLLM_API_BASE
+#   - "openrouter": use commercial models via OpenRouter
+LLM_BACKEND   = os.getenv("LLM_BACKEND", "ollama").strip().lower()
+
+# For vLLM you must set this to something like "http://vllm:8000/v1"
+VLLM_API_BASE = os.getenv("VLLM_API_BASE", "").strip().rstrip("/")
+
+# Ollama sidecar (used when LLM_BACKEND == "ollama")
+OLLAMA_HOST     = os.getenv("OLLAMA_HOST", "http://ollama:11434")  # default for Docker
 OLLAMA_API_BASE = f"{OLLAMA_HOST.rstrip('/')}/v1"
 
 RANDOM_SEED     = 42
@@ -68,15 +78,66 @@ model_responses: list[str] = []
 # Agent / prompt builders
 # =========================
 def create_assistant_agent(ass_prompt: str) -> lr.ChatAgent:
-    cfg = lm.OpenAIGPTConfig(
-        timeout=180,
-        chat_context_length=1_040_000,
-        chat_model=f"ollama/{ASS_MODEL}",
-        api_base=OLLAMA_API_BASE,
-        seed=RANDOM_SEED,
-    )
-    return lr.ChatAgent(lr.ChatAgentConfig(system_message=ass_prompt, llm=cfg))
+    """
+    Build the Langroid ChatAgent for the assistant, using the backend selected by
+    the LLM_BACKEND env var.
 
+    Supported backends:
+      - "ollama"    (default): use the Ollama sidecar at OLLAMA_API_BASE
+      - "vllm"      : use a vLLM OpenAI-compatible server at VLLM_API_BASE
+      - "openrouter": use commercial models via OpenRouter (OPENROUTER_API_KEY)
+    """
+    backend = (LLM_BACKEND or "ollama").lower()
+
+    if backend == "ollama":
+        # Local open-source models via the Ollama sidecar
+        cfg = lm.OpenAIGPTConfig(
+            timeout=180,
+            chat_context_length=1_040_000,
+            chat_model=f"ollama/{ASS_MODEL}",
+            api_base=OLLAMA_API_BASE,
+            seed=RANDOM_SEED,
+        )
+
+    elif backend == "vllm":
+        # vLLM exposes an OpenAI-compatible /v1/chat/completions endpoint.
+        # Example VLLM_API_BASE: "http://vllm:8000/v1"
+        if not VLLM_API_BASE:
+            raise RuntimeError(
+                "LLM_BACKEND is set to 'vllm' but VLLM_API_BASE is empty. "
+                "Set VLLM_API_BASE to your vLLM OpenAI-compatible base URL "
+                "(e.g. http://vllm:8000/v1)."
+            )
+        cfg = lm.OpenAIGPTConfig(
+            timeout=180,
+            chat_context_length=1_040_000,
+            chat_model=ASS_MODEL,      # vLLM model name, e.g. "Mistral-7B-Instruct-v0.2"
+            api_base=VLLM_API_BASE,
+            seed=RANDOM_SEED,
+        )
+
+    elif backend == "openrouter":
+        # Commercial models via OpenRouter (OpenAI-compatible).
+        # Langroid will read OPENROUTER_API_KEY and route requests to
+        # https://openrouter.ai/api/v1 under the hood when chat_model starts
+        # with "openrouter/".
+        #
+        # ASS_MODEL should be a full OpenRouter model id such as
+        #   "openai/gpt-4o" or "anthropic/claude-3.5-sonnet"
+        cfg = lm.OpenAIGPTConfig(
+            timeout=180,
+            chat_context_length=1_040_000,
+            chat_model=f"openrouter/{ASS_MODEL}",
+            seed=RANDOM_SEED,
+        )
+
+    else:
+        raise ValueError(
+            f"Unsupported LLM_BACKEND={backend!r}. "
+            "Use 'ollama', 'vllm', or 'openrouter'."
+        )
+
+    return lr.ChatAgent(lr.ChatAgentConfig(system_message=ass_prompt, llm=cfg))
 
 def create_prompts(row) -> tuple[str, str]:
     chief_complaint = str(row.get("chief_complaint", ""))
@@ -530,7 +591,7 @@ async def on_message(message: cl.Message):
             return
 
         # FINAL ANSWER -> record, move to next or end
-        if upper.startswith("FINAL ANSWER:"):
+        if upper.startswith("FINAL ANSWER:") or upper.startswith("FINAL DIAGNOSIS:"):
             final_answer = content.split(":", 1)[1].strip()
             answers[qid] = final_answer
             cl.user_session.set("answers", answers)
@@ -590,18 +651,13 @@ async def on_message(message: cl.Message):
                 res = await cl.AskActionMessage(
                     content=(
                         "You have completed all cases.\n\n"
-                        "Please choose how to proceed."
+                        "Please click the button below to finalize your session."
                     ),
                     actions=[
                         cl.Action(
                             name="end_session",
                             payload={"value": "end"},
                             label="End session",
-                        ),
-                        cl.Action(
-                            name="stay",
-                            payload={"value": "stay"},
-                            label="Stay on this page",
                         ),
                     ],
                     timeout=3600,
@@ -617,47 +673,35 @@ async def on_message(message: cl.Message):
                 payload = res.get("payload") or {}
                 value = payload.get("value")
 
-                if value == "end":
-                    # 1) Finalize -> this sets session_total_sec in user_session
-                    await _finalize_session(
-                        df,
-                        list(answers.values()),
-                        partial=False,
-                        out_dir=OUT_DIR,
-                        model_name=ASS_MODEL_NAME,
-                    )
-                    await _save_csv(
-                        df,
-                        list(answers.values()),
-                        out_dir=OUT_DIR,
-                        model_name=ASS_MODEL_NAME,
-                        final=True,
-                    )
-                    await _stop_streaming_and_optionally_close(close_agent=True)
+                # 1) Finalize -> this sets session_total_sec in user_session
+                await _finalize_session(
+                    df,
+                    list(answers.values()),
+                    partial=False,
+                    out_dir=OUT_DIR,
+                    model_name=ASS_MODEL_NAME,
+                )
+                await _save_csv(
+                    df,
+                    list(answers.values()),
+                    out_dir=OUT_DIR,
+                    model_name=ASS_MODEL_NAME,
+                    final=True,
+                )
+                await _stop_streaming_and_optionally_close(close_agent=True)
                     
-                    cl.user_session.set("session_completed", True)
-                    cl.user_session.set("case_started", False)
+                cl.user_session.set("session_completed", True)
+                cl.user_session.set("case_started", False)
 
-                    # 2) NOW read the total session time
-                    total_sec = cl.user_session.get("session_total_sec") or 0.0
+                # 2) NOW read the total session time
+                total_sec = cl.user_session.get("session_total_sec") or 0.0
 
-                    await cl.Message(
-                        content="✅ All cases completed. Thank you!"
-                    ).send()
-                    await _force_client_redirect_to_thanks(
-                        username, sess_id, total_sec, n_cases_done
-                    )
-                else:
-                    await cl.Message(
-                        content=(
-                            "You chose to stay on this page. "
-                            "All cases are completed and this session is now finished. "
-                            "You can close this tab or refresh to start a new session."
-                        )
-                    ).send()
-                    
-                    cl.user_session.set("session_completed", True)
-                    cl.user_session.set("case_started", False)
+                await cl.Message(
+                    content="✅ All cases completed. Thank you!"
+                ).send()
+                await _force_client_redirect_to_thanks(
+                    username, sess_id, total_sec, n_cases_done
+                )
 
                 return  # important: don't fall through
 

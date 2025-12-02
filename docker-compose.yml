@@ -59,5 +59,29 @@ services:
       - ollama:/root/.ollama
     gpus: all
 
+  # vllm:
+  #   image: vllm/vllm-openai:v0.8.2
+  #   container_name: medsyn-vllm
+  #   restart: unless-stopped
+
+  #   # Load HF token, VLLM_MODEL, etc. from .env.prod
+  #   env_file:
+  #     - .env.prod
+
+  #   # Extra env vars to tame memory and disable FlashInfer sampler
+  #   environment:
+  #     # 0 = disable FlashInfer sampler (fallback to PyTorch)
+  #     VLLM_USE_FLASHINFER_SAMPLER: "0"
+
+  #   command: >
+  #     --model dangvansam/gemma-2-9b-it-fix-system-role
+  #     --served-model-name google/gemma-2-9b-it
+  #     --dtype auto
+  #     --max-model-len 1_040_000
+  #     --max-num-seqs 2
+  #     --gpu-memory-utilization 0.90
+
+  #   gpus: all
+
 volumes:
   ollama:

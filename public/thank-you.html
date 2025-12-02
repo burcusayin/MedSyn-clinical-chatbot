@@ -18,6 +18,24 @@
         <ul id="summaryList"></ul>
       </div>
 
+      <section class="survey">
+        <h2>Please complete the anonymous survey</h2>
+        <p>
+          We kindly invite you to complete a short anonymous survey about your experience
+          with MedSyn. Your feedback will help us improve the MedSyn. Thank you!
+        </p>
+        <p>
+          <a
+            href="https://forms.gle/Ri8Ebn35VhSe41r47"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="btn"
+          >
+            Open the anonymous survey
+          </a>
+        </p>
+      </section>
+
       <!-- Keep the button OUTSIDE #summary so rendering never wipes it -->
       <div class="actions">
         <button id="logoutBtn" class="btn" type="button" onclick="medsynLogoutInline()">Log out</button>
@@ -28,6 +46,7 @@
       <small>MedSyn • <span id="ts"></span></small>
     </footer>
   </main>
+
 
   <script>
     function secondsToHMS(s) {
