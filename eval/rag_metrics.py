@@ -10,6 +10,7 @@ from ragas.metrics import faithfulness
 from ragas.metrics.collections import FactualCorrectness
 from ragas.metrics.collections import Faithfulness
 from ragas.metrics.collections import AnswerRelevancy
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -64,84 +65,91 @@ async def main():
 
     args = parser.parse_args()
 
-    # you need to change this
-    clinic_notes = pd.read_csv(args.clinic_notes)
-    clinic_notes = clinic_notes.iloc[0].to_dict()
-
-    # print('Clinic notes')
-    # print(clinic_notes)
-
-    patient_history = clinic_notes['history']
-
-    print('==Patient History==')
-    print(patient_history)
-
-    examination_result = clinic_notes['results']
-
-    print('==Examination Result==')
-    print(examination_result)
-
-    parsed_messages = parse_log(args.log_file)
-    print(parsed_messages)
-
-
     # Setup LLM
     client = AsyncOpenAI()
 
     embeddings = embedding_factory("openai", model="text-embedding-3-small", client=client, interface="modern")
     llm = llm_factory("gpt-4o-mini", client=client, max_tokens=5000)
+    factual_correctness = FactualCorrectness(llm=llm, mode="f1", atomicity="low")
 
-    # # Create metric
-    # factual_correctness = FactualCorrectness(llm=llm, mode="f1", beta=1.0,atomicity="low")
-    #
-    # final_answer = parsed_messages[-1]['message']
-    #
-    # factual_result = await factual_correctness.ascore(
-    #     response=final_answer,
-    #     reference = examination_result
-    # )
-    #
-    # print(f'Factual Correctness {factual_result.value}')
+    dialogue = []
+    with open(args.log_file, "r", encoding="utf-8") as f:
+        for line in f:
+            dialogue.append(json.loads(line))
+
+    dialogue = pd.DataFrame(dialogue)
+    clinic_notes = pd.read_csv(args.clinic_notes)
 
     relevancy_scores = []
     faithfulness_scores = []
+    factuality_scores = []
     relevancy_scorer = AnswerRelevancy(llm=llm, embeddings=embeddings)
     faithfulness_scorer = Faithfulness(llm=llm)
 
-    for idx in range(0, len(parsed_messages),2):
-        if idx+1 == len(parsed_messages):
-            continue
-        if parsed_messages[idx] == 'llm':
-            continue
+    for case, row in dialogue.groupby(['case_index']):
 
-        user_input = parsed_messages[idx]['message']
-        response = parsed_messages[idx+1]['message']
+        # TODO: Please check this one!!!
+        clinic_note = clinic_notes.iloc[case].to_dict()
+        chief_complaint = clinic_note['chief_complaint']
+        history = clinic_note['history']
+        physical_exam = clinic_note['physical_exam']
+        examination_results = clinic_note['results']
+        discharge_diagnosis = clinic_note['discharge diagnosis']
 
-        result = await relevancy_scorer.ascore(
-            user_input=user_input,
-            response = response
-        )
+        examination_context = f'{chief_complaint}\n{history}\n{physical_exam}\n{examination_results}\n{discharge_diagnosis}'
 
-        relevancy_scores.append({
-            'user': user_input,
-            'llm': response,
-            'score': result.value,
-        })
+        row.sort_values(by='timestamp', inplace=True)
+
+        messages = row['message'].tolist()
+        if 'final answer' in messages[-2]:
+            final_answer = messages[-2]
+            print(final_answer)
+            print(discharge_diagnosis)
+            factual_result = await factual_correctness.ascore(
+                response=final_answer,
+                reference = discharge_diagnosis
+            )
+            factuality_scores.append(factual_result.value)
+            print(factuality_scores)
+
+        for idx in range(0, len(messages),2):
+            if idx+1 == len(messages):
+                continue
+
+            user_input = messages[idx]
+            response = messages[idx+1]
+
+            result = await relevancy_scorer.ascore(
+                user_input=user_input,
+                response = response
+            )
+
+            relevancy_scores.append({
+                'user': user_input,
+                'llm': response,
+                'score': result.value,
+            })
 
 
-        result = await  faithfulness_scorer.ascore(
-            user_input = user_input,
-            response=response,
-            retrieved_contexts=[
-                patient_history
-            ]
-        )
+            result = await  faithfulness_scorer.ascore(
+                user_input = user_input,
+                response=response,
+                retrieved_contexts=[
+                    examination_context
+                ]
+            )
 
-        faithfulness_scores.append({
-            'user': user_input,
-            'llm': response,
-            'score': result.value,
-        })
+            faithfulness_scores.append({
+                'user': user_input,
+                'llm': response,
+                'score': result.value,
+            })
+    factuality_scores = pd.DataFrame(factuality_scores)
+
+    print('Average factuality scores')
+    print(np.mean(factuality_scores['score'].to_numpy()))
+
+    factuality_scores.to_csv(f'{args.output_file_prefix}_factuality_scores.csv')
 
     relevancy_scores = pd.DataFrame(relevancy_scores)
 
@@ -156,7 +164,7 @@ async def main():
     print(np.mean(faithfulness_scores['score'].to_numpy()))
 
     faithfulness_scores.to_csv(f'{args.output_file_prefix}_faithfulness_scores.csv')
-
+#
 asyncio.run(main())
 
 
