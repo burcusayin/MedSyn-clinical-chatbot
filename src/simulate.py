@@ -94,6 +94,8 @@ def main():
             json.dump(hist, outfile)
     elif use_case == "ass_baseline":
         print("Use case is ass_baseline...")
+        #discharge_data = discharge_data[discharge_data['note_id'].isin(['17232310-DS-19', '10152950-DS-23', '16878615-DS-5', '14766306-DS-7', '13086457-DS-14', '14518480-DS-16', '14911780-DS-8', '11382261-DS-17', '11146631-DS-7', '10754345-DS-6'])]
+        #print("data filtrelendi")
         hist = {}  
         for index, row in tqdm(discharge_data.iterrows(), total=len(discharge_data)):
             chief_complaint = str(row['chief_complaint'])

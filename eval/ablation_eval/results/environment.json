@@ -1,0 +1,8 @@
+{
+  "timestamp_utc": "2026-01-19T16:07:05.099157+00:00",
+  "python_version": "3.11.2 (main, Apr 28 2025, 14:11:48) [GCC 12.2.0]",
+  "platform": "Linux-4.4.0-x86_64-with-glibc2.36",
+  "threshold": 62.0,
+  "baseline_csv": "baseline_scenario_outputs.csv",
+  "interactive_csv": "interactive_scenario_outputs.csv"
+}

@@ -71,3 +71,15 @@ reverse-proxy/log/
 # TLS / cert-related stuff
 reverse-proxy/ssl_user/
 reverse-proxy/certs/
+
+# --- Consent forms (do NOT commit) ---
+consent_forms/
+
+# --- Evaluation artifacts containing clinical text or full experiment outputs ---
+eval/session_outputs/
+eval/ablation_eval/inputs/
+eval/auto_eval/results/
+eval/manual_eval/inputs/
+eval/dial-eval/*.csv
+eval/dial-eval/test_run_out/
+eval/final eval files.zip

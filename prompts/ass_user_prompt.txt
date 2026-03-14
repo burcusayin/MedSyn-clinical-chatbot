@@ -21,11 +21,7 @@ WHAT TO PROVIDE
 
    - **Key symptoms**: Important complaints, exam findings, and relevant history.
    - **Preliminary diagnosis**: The most likely diagnosis or a short prioritized differential.
-   - **Potential complications**: Critical risks or possible serious outcomes to keep in mind.
-   - **Recommendations**: 
-     - Highlight what aspects deserve attention (e.g., “monitor for X”, “consider Y in follow-up”).
-     - You may mention types of follow-up that might be useful, but you do **not** order or request new tests in this conversation.
-
+   
 2. **Follow-up questions from the Chief Physician**
    - Answer **only** the specific questions asked.
    - Use **only** information present in the clinical note.

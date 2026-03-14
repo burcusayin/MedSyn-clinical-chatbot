@@ -1,9 +1,0 @@
-
-### Instructions:
-1. You can start the discussion by requesting an initial evaluation of the patient from MedSyn.
-2. Engage in a collaborative discussion to confirm the patient’s diagnosis. Please note that MedSyn has access to a more detailed clinical note, so you should consult your virtual assistant to obtain the necessary information for making the diagnosis.
-3. You are not allowed to ask for additional tests. You should evaluate the patient only based on the given clinical note, and your discussion with MedSyn.
-4. Once you have gathered sufficient information and are confident in the diagnosis, stop the discussion with MedSyn and write the diagnosis for the patient.
-5. To stop the discussion on a specific patient case, you should write 'final answer: ' or 'final diagnosis: ' followed by the diagnosis. For example; final answer: acute post traumatic headache
-6. Once you submit your final answer, you will be directed to a new patient case until you complete all cases.
-7. If you want to exit from the session for any reason, please type 'exit'.

@@ -7,28 +7,24 @@ Follow this strict protocol to complete the task:
    - In that message, explicitly ask MedSyn for an **initial evaluation**, including:
      - key symptoms and exam findings
      - a short list of likely diagnoses 
-     - possible complications
-     - brief recommendations.
 
 2. FOLLOW-UP WITH MedSyn (OPTIONAL)
    - After MedSyn replies, you may send MedSyn **follow-up messages** with specific clinical questions (e.g., “Is there evidence of NSTEMI?”, “Is heart failure described as acute on chronic?”).
    - Each time, wait for MedSyn’s answer and then decide if you have enough information to finalize the discharge diagnoses.
 
 3. FINAL STEP – CALLING THE TOOL (MANDATORY)
-   - Once you are satisfied, you must produce a single, final message that contains the discharge diagnoses. If there is only one diagnosis, simply provide a line. Otherwise, provide a **list**, one diagnosis per line, e.g.:
+   - Once you are satisfied, you must produce a single, final message that contains the primary diagnoses. If there is only one primary diagnosis, simply provide a line. Otherwise, provide a **list**, one diagnosis per line, e.g.:
        Right lower lobe community-acquired pneumonia
        COPD exacerbation
-   - Focus on the **acute problems that explain the admission** and key acute complications.
-   - Add **chronic conditions** only if they clearly influenced management during this admission (e.g., heart failure, COPD, diabetes, bioprosthetic valves), and list them AFTER the acute problems.
-   - Once the diagnosis is ready, request "discharge_text_tool" with the following JSON format:
-       ```json
-       {{
-         "request": "discharge_text_tool",
-         "dischargeText": {{
-           "diagnosis": < Put the diagnoses here >
-         }}
-       }}
-       ```
-   - The "diagnosis" field MUST contain ONLY diagnoses. Do NOT include meta-text like "placeholder", "awaiting further details", etc.
-   - NEVER call "discharge_text_tool" before you have received at least one reply from MedSyn.
-   - NEVER call "discharge_text_tool" with placeholder or non-diagnostic text.
+   - Include **only diagnoses that are clearly supported** by the clinical note.
+   - Each diagnosis must be **complete, specific, and unambiguous**. Avoid vague or provisional wording like: “rule out X”, “?”, “unknown”, “pending further evaluation”.
+   - When you are ready, output **only** the discharge diagnosis in the following JSON format:
+     
+    ```json
+    {{
+      "request": "discharge_text_tool",
+      "dischargeText": {{
+        "diagnosis": < Put the diagnoses here >
+      }}
+    }}
+    ```

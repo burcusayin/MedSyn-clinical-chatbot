@@ -3,16 +3,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Go to project root
-[[ -d "$MAIN_DIR" ]] || die "MAIN_DIR not found: $MAIN_DIR"
+: "${MAIN_DIR:=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)}"
+
 cd "$MAIN_DIR"
 
 [ -f src/__init__.py ] || touch src/__init__.py
 
 pwd
 
-PHYSICIAN_MODEL="openrouter/openai/gpt-oss-20b:free"
-ASSISTANT_MODEL="openrouter/openai/gpt-oss-20b:free"
+#models used in ablations
+#openai/gpt-oss-120b
+#openai/gpt-5.1-chat
+#google/gemini-3-pro-preview
+#meta-llama/llama-4-scout
+#openai/gpt-5.2-chat
+
+PHYSICIAN_MODEL="openrouter/openai/gpt-5.2-chat"
+ASSISTANT_MODEL="openrouter/openai/gpt-5.2-chat"
 SAFE_MODEL="${PHYSICIAN_MODEL//\//_}"
 # --- logging setup ---
 LOG_DIR=${MAIN_DIR}logs/ablationLogs
@@ -62,19 +69,19 @@ cd "$MAIN_DIR"
 # --ass_prompt_template ${MAIN_DIR}prompts/ass_user_prompt.txt  
 
 python -m src.simulate \
-  --input_file ${MAIN_DIR}data/patient_cases.csv \
-  --history_file ${MAIN_DIR}output/dialogues/two_agents/ \
-  --discharge_data_file ${MAIN_DIR}output/discharge_texts/ \
-  --phy_history_file ${MAIN_DIR}output/dialogues/two_agents/phy/ \
-  --ass_history_file ${MAIN_DIR}output/dialogues/two_agents/ass/ \
+  --input_file ${MAIN_DIR}/data/final_cases_ablation.csv \
+  --history_file ${MAIN_DIR}/output/dialogues/two_agents/ \
+  --discharge_data_file ${MAIN_DIR}/output/discharge_texts/ \
+  --phy_history_file ${MAIN_DIR}/output/dialogues/two_agents/phy/ \
+  --ass_history_file ${MAIN_DIR}/output/dialogues/two_agents/ass/ \
   --mode two-agent \
   --baseline_model "$PHYSICIAN_MODEL" \
-  --baseline_system_prompt ${MAIN_DIR}prompts/baseline_system.txt \
-  --baseline_prompt_template ${MAIN_DIR}prompts/baseline_user.txt \
+  --baseline_system_prompt ${MAIN_DIR}/prompts/baseline_system.txt \
+  --baseline_prompt_template ${MAIN_DIR}/prompts/baseline_user.txt \
   --assistant_model "$ASSISTANT_MODEL" \
   --physician_model "$PHYSICIAN_MODEL" \
-  --phy_system_prompt ${MAIN_DIR}prompts/phy_system_prompt.txt \
-  --phy_prompt_template ${MAIN_DIR}prompts/phy_user_prompt.txt \
-  --ass_system_prompt ${MAIN_DIR}prompts/ass_system_prompt.txt \
-  --ass_prompt_template ${MAIN_DIR}prompts/ass_user_prompt.txt \
-  --num_rows 5
+  --phy_system_prompt ${MAIN_DIR}/prompts/phy_system_prompt.txt \
+  --phy_prompt_template ${MAIN_DIR}/prompts/phy_user_prompt.txt \
+  --ass_system_prompt ${MAIN_DIR}/prompts/ass_system_prompt.txt \
+  --ass_prompt_template ${MAIN_DIR}/prompts/ass_user_prompt.txt \
+  --num_rows 52

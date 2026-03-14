@@ -1,0 +1,8 @@
+
+Please follow these instructions carefully:
+1. In this session, you will not be assisted by MedSyn. There is no AI support or feedback.
+2. For each patient, you will see the complete clinical note. Please read it carefully and, when you feel confident, type the diagnosis in the chat.
+3. Your answer for each case should be the primary diagnosis (or list of primary diagnoses), written as you would in a discharge summary. Please do not add explanations or reasoning.
+4. If you think there are more than one diagnosis, please list them separated with ; (e.g. acute post traumatic headache; community-acquired pneumonia).
+5. Once you submit your answer for a case, you will automatically be moved to the next patient until all cases are completed.
+6. If you need to stop the session at any time, please type exit in the chat.

@@ -1,0 +1,6 @@
+column,pct_literal_\n,pct_real_newline
+output_gemini-3-pro-preview,0.7307692307692307,0.0
+output_gpt-oss-120b,0.5769230769230769,0.0
+output_gpt-5.1-chat,0.6346153846153846,0.0
+output_llama-4-scout,0.38461538461538464,0.0
+output_gpt-5.2-chat,0.5384615384615384,0.0

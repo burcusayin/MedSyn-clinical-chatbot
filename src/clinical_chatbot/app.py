@@ -6,8 +6,11 @@ from time import perf_counter
 import asyncio
 import traceback
 from textwrap import dedent
+import json
+from urllib.parse import quote
 
 import pandas as pd
+
 import chainlit as cl
 import langroid as lr
 import langroid.language_models as lm
@@ -30,7 +33,9 @@ from src.clinical_chatbot.utils import (
     q_stop_and_record as _q_stop_and_record,
     save_csv as _save_csv,
     finalize_session as _finalize_session,
+    log_dialogue_turn as _log_dialogue_turn,
 )
+
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -66,11 +71,22 @@ OLLAMA_API_BASE = f"{OLLAMA_HOST.rstrip('/')}/v1"
 
 RANDOM_SEED     = 42
 
-# Prompt files
-phy_system_prompt   = PROMPTS_DIR / "real_phy_system_prompt.txt"
-phy_prompt_template = PROMPTS_DIR / "real_phy_user_prompt.txt"
-ass_system_prompt   = PROMPTS_DIR / "ass_system_prompt.txt"
-ass_prompt_template = PROMPTS_DIR / "ass_user_prompt.txt"
+# Experiment mode
+#   - "interactive" (default): chief complaint only + assistant LLM
+#   - "baseline"             : full note, no assistant (user submits final diagnosis directly)
+EXPERIMENT_MODE = os.getenv("EXPERIMENT_MODE", "interactive").strip().lower()
+IS_BASELINE = EXPERIMENT_MODE == "baseline"
+
+# Prompt files (configurable via environment)
+PHY_SYSTEM_PROMPT_FILE       = os.getenv("PHY_SYSTEM_PROMPT_FILE", "real_phy_system_prompt.txt")
+PHY_PROMPT_TEMPLATE_FILE     = os.getenv("PHY_PROMPT_TEMPLATE_FILE", "real_phy_user_prompt.txt")
+ASS_SYSTEM_PROMPT_FILE       = os.getenv("ASS_SYSTEM_PROMPT_FILE", "real_ass_system_prompt.txt")
+ASS_PROMPT_TEMPLATE_FILE     = os.getenv("ASS_PROMPT_TEMPLATE_FILE", "real_ass_user_prompt.txt")
+
+phy_system_prompt   = PROMPTS_DIR / PHY_SYSTEM_PROMPT_FILE
+phy_prompt_template = PROMPTS_DIR / PHY_PROMPT_TEMPLATE_FILE
+ass_system_prompt   = PROMPTS_DIR / ASS_SYSTEM_PROMPT_FILE
+ass_prompt_template = PROMPTS_DIR / ASS_PROMPT_TEMPLATE_FILE
 
 model_responses: list[str] = []
 
@@ -145,12 +161,12 @@ def create_prompts(row) -> tuple[str, str]:
     physical_exam   = str(row.get("physical_exam", ""))
     exam_results    = str(row.get("results", ""))
 
-    phy_clinical_note = "Chief complaint: " + chief_complaint
+    phy_clinical_note = "CHIEF COMPLAINT: " + chief_complaint
     ass_clinical_note = (
-        "Chief complaint: " + chief_complaint
-        + "\nPatient history: " + patient_history
-        + "\nPhysical exam: " + physical_exam
-        + "\nPertinent results: " + exam_results
+        "----------------------------------------------------------\n\nCHIEF COMPLAINT: " + chief_complaint
+        + "\n\n----------------------------------------------------------\n\nPATIENT HISTORY: \n\n" + patient_history
+        + "\n\n----------------------------------------------------------\n\nPHYSICAL EXAM: \n\n" + physical_exam
+        + "\n\n----------------------------------------------------------\n\nPERTINENT RESULTS: \n\n" + exam_results
     )
 
     read_phy_sys  = read_prompt_from_file(phy_system_prompt)
@@ -172,6 +188,21 @@ def create_prompts(row) -> tuple[str, str]:
     phy_prompt = phy_model.generate_prompt()
     ass_prompt = ass_model.generate_prompt(ass_clinical_note)
     return ass_prompt, ass_clinical_note, phy_prompt, phy_clinical_note
+
+def format_clinical_note_for_baseline(full_note: str) -> str:
+    """
+    Format the full clinical note (given as a single string) for human reading
+    in baseline mode.
+
+    We wrap the entire note in a fenced code block to prevent Markdown from
+    interpreting any characters (e.g. '=', '_') as headings or formatting.
+    """
+    text = (full_note or "").strip()
+    # Avoid accidentally closing the code block if ``` appears in the note
+    text = text.replace("```", "'''")
+
+    return f"### Clinical note\n\n```text\n{text}\n```"
+
 
 # =========================
 # Auth
@@ -232,17 +263,54 @@ async def _force_client_redirect_to_thanks(
     n_cases_done: int,
 ) -> None:
     """
-    Send a special marker message that the frontend JS uses
-    to auto-redirect to the thank you page.
+    Notify the frontend that the session is finished and redirect the user
+    to the thank-you/survey page.
+
+    We do two things:
+      1. Send a visible fallback message with a direct link to the summary page.
+      2. Send the [[AUTO_LOGOUT::...]] marker used by public/login.js for
+         automatic redirect + logout, for environments where that JS hook
+         is active.
     """
+    safe_username = username or "unknown"
+    safe_sess_id = sess_id or ""
+    safe_total = float(total_sec or 0.0)
+    safe_n_cases = int(n_cases_done or 0)
+
+    # Payload understood by public/thank-you.html (via decodeFromHash()).
+    summary = {
+        "username": safe_username,
+        "sessionId": safe_sess_id,
+        "totalTimeSec": safe_total,
+        "nCases": safe_n_cases,
+        "endedAt": datetime.now().isoformat(),
+    }
+    try:
+        payload = quote(json.dumps(summary))
+        thank_you_url = f"/public/thank-you.html#{payload}"
+    except Exception:
+        # Very defensive: fall back to a simple URL without payload
+        thank_you_url = "/public/thank-you.html"
+
+    # 1) Visible fallback link for users (works even if JS marker watcher fails)
     await cl.Message(
         content=(
-            f"[[AUTO_LOGOUT::{username or 'unknown'}::{sess_id or ''}::"
-            f"{(total_sec or 0.0):.2f}::{int(n_cases_done or 0)}]]"
+            "You will now be redirected to the session summary and survey. Please complete the post-session questionnaire. \n\n"
+            f"If nothing happens automatically, please open this link:\n{thank_you_url}"
         )
     ).send()
-    # Give the client a moment to receive the marker
+
+    # 2) Marker for automatic redirect via public/login.js (if active)
+    await cl.Message(
+        content=(
+            f"[[AUTO_LOGOUT::{safe_username}::{safe_sess_id}::"
+            f"{safe_total:.2f}::{safe_n_cases}]]"
+        )
+    ).send()
+
+    # Give the client a moment to receive/process messages
     await asyncio.sleep(0.05)
+
 
 def _log_conversation_snapshot(prefix: str = "") -> None:
     """
@@ -301,6 +369,15 @@ async def _agent_respond_and_log(
             text = str(resp) if resp is not None else "<empty response>"
 
         _log_line(f"LLM MESSAGE Q{idx + 1} (ID: {qid}): {text}")
+        
+        # Structured dialogue log: llm turn
+        _log_dialogue_turn(
+            sender="llm",
+            message=text,
+            idx=idx,
+            qid=qid,
+        )
+
     except asyncio.CancelledError:
         # Streaming cancelled (stop button etc.) - just propagate
         raise
@@ -323,27 +400,60 @@ async def _start_case(idx: int) -> None:
 
     row = df.iloc[idx]
     ass_prompt, ass_clinical_note, phy_prompt, phy_clinical_note = create_prompts(row)
-    agent = create_assistant_agent(ass_prompt)
-    cl.user_session.set("ass_agent", agent)
-    ChainlitAgentCallbacks(agent)
+
+    # In baseline mode we do NOT create an assistant; users only see the note
+    # and then submit their final diagnosis directly.
+    if IS_BASELINE:
+        agent = None
+        cl.user_session.set("ass_agent", None)
+    else:
+        agent = create_assistant_agent(ass_prompt)
+        cl.user_session.set("ass_agent", agent)
+        ChainlitAgentCallbacks(agent)
 
     qid = row.get("note_id", idx + 1)
     _q_start()
     _log_line(f"Q{idx + 1} (ID: {qid}) started at {datetime.now().isoformat()}")
+    
+    # Structured dialogue marker: case start
+    _log_dialogue_turn(
+        sender="system",
+        message=f"CASE_START: note_id={qid}",
+        idx=idx,
+        qid=qid,
+    )
 
     # Mark that a case has started => we now accept user input
     cl.user_session.set("case_started", True)
 
-    # For each case, show a clear "start" message + the clinical note
-    msg_content = f"Case {idx+1} is ready, please see the clinical note for the patient below. You can now start the conversation with the assistant."
+    # Decide which clinical note to show to the clinician
+    # - Baseline   -> full clinical note (assessment view)
+    # - Interactive-> chief complaint only (physician view)
+    note_to_show = ass_clinical_note if IS_BASELINE else phy_clinical_note
+
+    if IS_BASELINE:
+        # Nice, structured view of the full note for clinicians
+        note_to_show = format_clinical_note_for_baseline(note_to_show)
+        msg_content = (
+            f"Case {idx+1} is ready. Please see the full clinical note below "
+            "and then type your final discharge diagnosis in the chat.\n\n"
+            + note_to_show
+        )
+    else:
+        # Interactive mode: only chief complaint, plain text
+        msg_content = (
+            f"Case {idx+1} is ready. Please see the clinical note for the patient "
+            "below. You can now start the conversation with the assistant.\n\n"
+            + dedent(note_to_show)
+        )
 
     try:
-        msg_content += "\n\n" + dedent(phy_clinical_note)
         await cl.Message(content=msg_content).send()
     except Exception:
         await cl.Message(
             content=f"Started case {idx + 1}. Please continue the conversation."
         ).send()
+
 
 # =========================
 # Lifecycle
@@ -399,6 +509,7 @@ async def on_chat_start():
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(f"Session started: {datetime.now().isoformat()}\n")
         f.write(f"Session ID: {session_id}\n")
+        f.write(f"Experiment mode: {EXPERIMENT_MODE}\n")
         f.write(f"Total questions in session: {len(df)}\n\n")
 
     # Build and show instructions from the first case, but DO NOT start the agent yet
@@ -410,7 +521,26 @@ async def on_chat_start():
         content=dedent(phy_prompt),
     )
 
+    # Mode-specific clarifications for the user
+    if IS_BASELINE:
+        await cl.Message(
+            content=dedent(
+                """
+                **Study condition: Baseline (no AI support)**
+                """
+            )
+        ).send()
+    else:
+        await cl.Message(
+            content=dedent(
+                """
+                **Study condition: Interactive (with AI assistant)**
+                """
+            )
+        ).send()
+
     cl.user_session.set("instructions_shown", True)
+
 
     # Hard gate: user must explicitly start or exit
     res = await cl.AskActionMessage(
@@ -449,9 +579,11 @@ async def on_chat_start():
 
     if value == "exit":
         _log_line("User chose to exit at start, no cases started.")
+        
         await cl.Message(
-            content="You chose to exit. No case has been started."
+            content="You chose to exit."
         ).send()
+        
         cl.user_session.set("case_started", False)
         cl.user_session.set("session_completed", True)
         # No cases started: mark session as finalized (0 completed)
@@ -470,9 +602,12 @@ async def on_chat_start():
                 or "unknown"
             )
         n_cases_done = 0
-        await _force_client_redirect_to_thanks(
-            username, session_id, total_sec, n_cases_done
-        )
+
+        # Baseline: do NOT redirect to the thank-you/survey page
+        if not IS_BASELINE:
+            await _force_client_redirect_to_thanks(
+                username, session_id, total_sec, n_cases_done
+            )
         return
 
     # Default: start case 1
@@ -540,6 +675,21 @@ async def on_message(message: cl.Message):
 
         # Log every incoming user message
         _log_line(f"USER MESSAGE Q{idx + 1} (ID: {qid}): {content}")
+        
+        # Structured dialogue log: user turn
+        _log_dialogue_turn(
+            sender="user",
+            message=content,
+            idx=idx,
+            qid=qid,
+        )
+
+        # In baseline mode, any non-EXIT message is treated as the final diagnosis.
+        # We internally rewrite it into a FINAL ANSWER command so that the existing
+        # flow for recording answers and ending the session can be reused.
+        if IS_BASELINE and not upper.startswith("EXIT"):
+            content = f"FINAL ANSWER: {content}"
+            upper = content.upper()
 
         # EXIT -> partial finalize + marker
         if upper.startswith("EXIT"):
@@ -553,6 +703,14 @@ async def on_message(message: cl.Message):
             # Log what has been discussed so far in this session
             _log_conversation_snapshot(
                 prefix=f"On EXIT from Q{idx + 1} (ID: {qid})"
+            )
+            
+            # Structured dialogue marker: case aborted by user exit
+            _log_dialogue_turn(
+                sender="system",
+                message="CASE_ABORT: user_exit",
+                idx=idx,
+                qid=qid,
             )
 
             await _stop_streaming_and_optionally_close(close_agent=True)
@@ -585,9 +743,12 @@ async def on_message(message: cl.Message):
             cl.user_session.set("case_started", False)
 
             await cl.Message(content="Session ended. Thank you.").send()
-            await _force_client_redirect_to_thanks(
-                username, sess_id, total_sec, n_cases_done
-            )
+            
+            if not IS_BASELINE:
+                await _force_client_redirect_to_thanks(
+                    username, sess_id, total_sec, n_cases_done
+                )
+                
             return
 
         # FINAL ANSWER -> record, move to next or end
@@ -603,6 +764,14 @@ async def on_message(message: cl.Message):
             )
             _log_line(
                 f"Time for Q{idx + 1} (ID: {qid}): {elapsed:.2f} sec"
+            )
+            
+            # Structured dialogue marker: case end with final answer
+            _log_dialogue_turn(
+                sender="system",
+                message=f"CASE_END: final_answer={final_answer}",
+                idx=idx,
+                qid=qid,
             )
 
             # Acknowledge the answer and stop current task
@@ -630,8 +799,7 @@ async def on_message(message: cl.Message):
                 await _start_case(idx)
                 return  # don't let the LLM answer the FINAL ANSWER message
             else:
-                # Last case: ask user if they want to end session and go to thank you page
-                # Last case: ask user if they want to end session and go to thank you page
+                # Last case completed
                 sess_id = cl.user_session.get("session_id") or ""
                 user_obj = cl.user_session.get("user") or get_current_user()
                 if isinstance(user_obj, dict):
@@ -648,6 +816,41 @@ async def on_message(message: cl.Message):
                     )
                 n_cases_done = len(answers)
 
+                # BASELINE: finalize immediately, no "End session" button, no redirect
+                if IS_BASELINE:
+                    await _finalize_session(
+                        df,
+                        list(answers.values()),
+                        partial=False,
+                        out_dir=OUT_DIR,
+                        model_name=ASS_MODEL_NAME,
+                    )
+                    await _save_csv(
+                        df,
+                        list(answers.values()),
+                        out_dir=OUT_DIR,
+                        model_name=ASS_MODEL_NAME,
+                        final=True,
+                    )
+                    await _stop_streaming_and_optionally_close(close_agent=True)
+
+                    cl.user_session.set("session_completed", True)
+                    cl.user_session.set("case_started", False)
+
+                    total_sec = cl.user_session.get("session_total_sec") or 0.0
+                    _log_line(
+                        f"Baseline session completed for user={username}, "
+                        f"session={sess_id}, total_sec={total_sec:.2f}, "
+                        f"n_cases_done={n_cases_done}"
+                    )
+
+                    await cl.Message(
+                        content="✅ All cases completed. Thank you! You can now log out from this session."
+                    ).send()
+                    # Important: NO redirect in baseline mode
+                    return
+
+                # INTERACTIVE: keep existing behaviour with End Session button + redirect
                 res = await cl.AskActionMessage(
                     content=(
                         "You have completed all cases.\n\n"
@@ -689,7 +892,7 @@ async def on_message(message: cl.Message):
                     final=True,
                 )
                 await _stop_streaming_and_optionally_close(close_agent=True)
-                    
+
                 cl.user_session.set("session_completed", True)
                 cl.user_session.set("case_started", False)
 
@@ -730,6 +933,11 @@ async def on_message(message: cl.Message):
 
 @cl.on_stop
 async def _on_stop():
+    # If the session is already completed, just log and ignore
+    if cl.user_session.get("session_completed", False):
+        _log_line("on_stop called but session already completed; skipping partial finalize.")
+        return
+    
     # Log whatever conversation we have up to this point
     _log_conversation_snapshot(prefix="on_stop")
 
@@ -746,6 +954,10 @@ async def _on_stop():
 
 @cl.on_chat_end
 async def _on_chat_end():
+    if cl.user_session.get("session_completed", False):
+        _log_line("on_chat_end called but session already completed; skipping partial finalize.")
+        return
+    
     # Log whatever conversation we have up to this point
     _log_conversation_snapshot(prefix="on_chat_end")
 

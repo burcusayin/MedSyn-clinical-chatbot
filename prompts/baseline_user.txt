@@ -13,17 +13,11 @@ YOUR TASK
    - Do **not** invent findings, lab values, or test results.
 
 3. **Decide the final diagnoses.**
-   - Identify the **principal diagnosis** for this admission.
-   - Optionally add **closely related complications** (e.g., “sepsis secondary to pneumonia”) and **chronic conditions that clearly impacted management** (e.g., “heart failure with reduced ejection fraction” if it shaped treatment).
+   - Identify the **primary diagnosis** for this admission. If you think there are more than one primary diagnosis, format them as a **list**; one diagnosis per line, e.g.:
+       Right lower lobe community-acquired pneumonia
+       COPD exacerbation
    - Include **only diagnoses that are clearly supported** by the clinical note.
-   - Each diagnosis must be **complete, specific, and unambiguous**.
-   - Avoid vague or provisional wording like:
-     - “rule out X”, “?”, “unknown”, “pending further evaluation”.
-   - If multiple diagnoses are needed, format them as a **list**, for example:
-
-     Principal diagnosis  
-     Key complication  
-     Major chronic condition relevant to this admission
+   - Each diagnosis must be **complete, specific, and unambiguous**. Avoid vague or provisional wording like: “rule out X”, “?”, “unknown”, “pending further evaluation”.
 
 ----------------
 OUTPUT FORMAT

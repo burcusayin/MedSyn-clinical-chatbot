@@ -3,6 +3,8 @@ from pathlib import Path
 from datetime import datetime
 from time import perf_counter
 from typing import Tuple, Optional, List
+import os
+import json
 
 import pandas as pd
 import chainlit as cl
@@ -108,6 +110,62 @@ def log_line(text: str) -> None:
             f.write(f"[{now}] {cleaned}\n")
     except Exception:
         pass
+    
+def log_dialogue_turn(
+        *,
+        sender: str,
+        message: str,
+        idx: int,
+        qid,
+    ) -> None:
+    """
+    Append a structured dialogue turn to a per-session JSONL file.
+
+    Each line looks like:
+    {
+      "timestamp": "...",
+      "experiment_mode": "interactive" | "baseline",
+      "session_id": "...",
+      "case_index": 0,
+      "question_number": 1,
+      "note_id": "10948322-DS-16",
+      "sender": "user" | "llm",
+      "message": "..."
+    }
+    """
+    try:
+        # Where to store dialogues
+        base_out_dir = Path(os.getenv("OUT_DIR", "output"))
+        conv_dir = base_out_dir / "dialogues"
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        # Meta for filename
+        safe_user, safe_sess = get_session_meta_for_filename()
+        mode = os.getenv("EXPERIMENT_MODE", "interactive").strip().lower()
+
+        file_path = conv_dir / f"dialogue_{mode}__{safe_user}__{safe_sess}.jsonl"
+
+        # Session metadata
+        sess_id = cl.user_session.get("session_id") or ""
+        ts = datetime.now().isoformat()
+
+        record = {
+            "timestamp": ts,
+            "experiment_mode": mode,
+            "session_id": sess_id,
+            "case_index": int(idx),
+            "question_number": int(idx) + 1,
+            "note_id": qid,
+            "sender": sender,          # "user" or "llm"
+            "message": message,
+        }
+
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    except Exception as e:
+        # Never break the app because structured logging failed
+        log_line(f"ERROR in log_dialogue_turn: {e!r}")
 
 
 
@@ -145,6 +203,23 @@ def q_stop_and_record(qid) -> float:
 
 # -------- CSV / finalize helpers --------
 
+def _sanitize_filename_component(value: str) -> str:
+    """
+    Make a string safe to use inside filenames:
+    - Replace path separators with underscores.
+    - Replace other weird characters with underscores.
+    """
+    if value is None:
+        return "model"
+    s = str(value).strip()
+    if not s:
+        return "model"
+    s = s.replace("/", "_").replace("\\", "_")
+    # Allow only alnum, dot, dash, underscore
+    s = re.sub(r"[^A-Za-z0-9_.\-]+", "_", s)
+    return s or "model"
+
+
 async def save_csv(
     df: pd.DataFrame,
     answers: List[str],
@@ -164,15 +239,25 @@ async def save_csv(
     elapsed = (elapsed + [None] * len(out))[:len(out)]
     out["time_spent_seconds"] = elapsed
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = Path(out_dir)
 
     safe_user, safe_sess = get_session_meta_for_filename()
-    base = f"out_interactive_ass_{model_name}__{safe_user}__{safe_sess}"
+    mode = os.getenv("EXPERIMENT_MODE", "interactive").strip().lower()
+
+    # Make model name safe for filenames (no slashes etc.)
+    safe_model = _sanitize_filename_component(model_name)
+
+    base = f"out_{mode}_ass_{safe_model}__{safe_user}__{safe_sess}"
     if not final:
         base += f"__{suffix or 'partial'}"
+
     out_csv = out_dir / f"{base}.csv"
 
+    # Ensure *all* parent directories exist (in case base accidentally contains separators)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+
     out.to_csv(out_csv, index=False)
+
     log_line(f"Saved CSV -> {out_csv}")
 
 

@@ -1,0 +1,11 @@
+
+### Instructions:
+1. If you want, you can start the discussion by requesting an initial evaluation of the patient from MedSyn.
+2. Please engage in a collaborative discussion to confirm the patient’s diagnosis. Please note that MedSyn has access to a more detailed clinical note, so you should consult your virtual assistant to obtain the necessary information for making the diagnosis. Keep in mind that the clinical note has been anonymized, so you may not access sensitive information.
+3. You should evaluate the patient only based on the given clinical note, and your discussion with MedSyn. You can ask anything to MedSyn, including suggestions for the possible diagnosis. You can even ask MedSyn's opinion about a possible diagnosis you are considering, or request an opinion about differential diagnosis. 
+4. Once you have gathered sufficient information and are confident in the diagnosis, stop the discussion with MedSyn and write the primary diagnosis (or list of diagnoses) for the patient.
+5. To stop the discussion on a specific patient case, you should write 'final answer: ' or 'final diagnosis: ' followed by the diagnosis. For example; final answer: Diagnosis
+6. If you think there are more than one diagnosis, please list them separated with ; (e.g. final answer: Diagnosis 1; Diagnosis 2).
+7. Once you submit your final answer, you will be directed to a new patient case until you complete all cases.
+8. After completing all the cases, please click 'End session' button to be directed to a final survey.
+9. If you want to exit from the session for any reason, please type 'exit'.
