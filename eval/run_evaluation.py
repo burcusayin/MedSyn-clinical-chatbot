@@ -1,0 +1,1026 @@
+#!/usr/bin/env python3
+"""
+MedSyn Unified Evaluation Script
+=================================
+Produces all tables and figures for the MedSyn paper (Parts A-C).
+
+Part A: Automated diagnosis evaluation (fuzzy matching metrics)
+Part B: Manual evaluation alignment & manual score analysis
+Part C: Inter-user concordance (ground-truth independent)
+
+Usage:
+    python run_evaluation.py \
+        --session_dir eval/session_outputs \
+        --manual_dir  eval/manual_eval/inputs \
+        --out_dir     eval/results \
+        --threshold   80 \
+        --bootstrap_n 20000 \
+        --seed        42
+
+Requirements: pandas, numpy, rapidfuzz, matplotlib, scipy
+"""
+
+import argparse, os, json, re, unicodedata, warnings
+from pathlib import Path
+from itertools import combinations
+
+import numpy as np
+import pandas as pd
+from rapidfuzz import fuzz
+from scipy import stats
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# ── Constants ──────────────────────────────────────────────────────────────────
+SENIORS = ["phy1", "phy2", "phy3"]
+RESIDENTS = ["res1", "res3", "res5", "res6"]
+ALL_PARTICIPANTS = SENIORS + RESIDENTS
+SESSIONS = {1: "baseline", 2: "interactive", 3: "baseline", 4: "interactive"}
+DIFF_WEIGHTS = {"Easy": 3 / 13, "Medium": 6 / 13, "Hard": 4 / 13}
+MANUAL_SCORES = {"WRONG": 0.0, "PARTIALLY CORRECT": 0.5, "COMPLETELY CORRECT": 1.0}
+FIG_DPI = 400  # npj Digital Medicine: ≥300 dpi
+PALETTE = {"Senior": "#2166ac", "Resident": "#b2182b"}
+COND_PALETTE = {"Baseline": "#7fbf7b", "Interactive": "#af8dc3"}
+
+# ── Text normalisation ─────────────────────────────────────────────────────────
+def normalize_text(s: str) -> str:
+    if pd.isna(s) or not isinstance(s, str):
+        return ""
+    s = str(s).lower().strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = s.replace("&", "and")
+    s = re.sub(r"[\(\)\[\]\{\}]", "", s)
+    s = re.sub(r"[^a-z0-9\s]", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def split_diagnoses(text: str, is_gold: bool = False) -> list[str]:
+    """Split a diagnosis string into individual items."""
+    if pd.isna(text) or not str(text).strip():
+        return []
+    text = str(text).strip()
+    # Handle primary/secondary markers
+    text = re.split(r"(?i)\bsecondary\s*(?:diagnos[ei]s)?\s*:", text)[0]
+    text = re.sub(r"(?i)\bprimary\s*(?:diagnos[ei]s)?\s*:", "", text)
+    # Split by semicolons and newlines
+    items = re.split(r"[;\n\r]+", text)
+    result = []
+    for item in items:
+        n = normalize_text(item)
+        if n and len(n) > 2:
+            result.append(n)
+    return result
+
+
+# ── Fuzzy matching ─────────────────────────────────────────────────────────────
+def fuzzy_match_greedy(pred_list: list[str], gold_list: list[str],
+                       threshold: int = 80) -> tuple[int, list[tuple]]:
+    """Greedy one-to-one fuzzy matching using RapidFuzz token_set_ratio."""
+    if not pred_list or not gold_list:
+        return 0, []
+    pairs = []
+    for pi, p in enumerate(pred_list):
+        for gi, g in enumerate(gold_list):
+            score = fuzz.token_set_ratio(p, g)
+            if score >= threshold:
+                pairs.append((pi, gi, score))
+    pairs.sort(key=lambda x: x[2], reverse=True)
+    used_pred, used_gold, matches = set(), set(), []
+    for pi, gi, score in pairs:
+        if pi not in used_pred and gi not in used_gold:
+            used_pred.add(pi)
+            used_gold.add(gi)
+            matches.append((pi, gi, score))
+    return len(matches), matches
+
+
+def compute_case_metrics(pred_text: str, gold_text: str,
+                         threshold: int = 80) -> dict:
+    """Compute all per-case metrics for one (participant, case)."""
+    pred = split_diagnoses(pred_text, is_gold=False)
+    gold = split_diagnoses(gold_text, is_gold=True)
+    m, _ = fuzzy_match_greedy(pred, gold, threshold)
+    p_count, g_count = len(pred), len(gold)
+    prec = m / p_count if p_count else 0.0
+    rec = m / g_count if g_count else 0.0
+    f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+    any_match = 1.0 if m > 0 else 0.0
+    exact = 1.0 if (m == p_count == g_count and m > 0) else 0.0
+    return dict(n_pred=p_count, n_gold=g_count, n_match=m,
+                precision=prec, recall=rec, f1=f1,
+                any_match=any_match, exact_match=exact)
+
+
+# ── Difficulty standardisation ─────────────────────────────────────────────────
+def standardize(df: pd.DataFrame, metric: str) -> float:
+    """Weighted mean over difficulty levels for one participant-session."""
+    result = 0.0
+    for diff, w in DIFF_WEIGHTS.items():
+        subset = df[df["difficulty"] == diff]
+        result += w * (subset[metric].mean() if len(subset) else 0.0)
+    return result
+
+
+# ── Bootstrap ──────────────────────────────────────────────────────────────────
+def paired_bootstrap(baseline_vals: np.ndarray, interactive_vals: np.ndarray,
+                     n_boot: int = 20000, seed: int = 42) -> dict:
+    """Paired bootstrap over participants: Interactive minus Baseline."""
+    rng = np.random.default_rng(seed)
+    n = len(baseline_vals)
+    deltas = interactive_vals - baseline_vals
+    observed_mean = deltas.mean()
+    observed_median = np.median(deltas)
+    boot_means = np.array([
+        rng.choice(deltas, size=n, replace=True).mean()
+        for _ in range(n_boot)
+    ])
+    ci_lo, ci_hi = np.percentile(boot_means, [2.5, 97.5])
+    p_val = 2 * min((boot_means <= 0).mean(), (boot_means >= 0).mean())
+    p_val = max(p_val, 1 / n_boot)  # floor
+    return dict(
+        mean_delta=observed_mean, median_delta=observed_median,
+        ci_lo=ci_lo, ci_hi=ci_hi, p_value=p_val,
+        sig=p_val < 0.05,
+        baseline_median=np.median(baseline_vals),
+        baseline_q1=np.percentile(baseline_vals, 25),
+        baseline_q3=np.percentile(baseline_vals, 75),
+        interactive_median=np.median(interactive_vals),
+        interactive_q1=np.percentile(interactive_vals, 25),
+        interactive_q3=np.percentile(interactive_vals, 75),
+    )
+
+
+def cohens_d(baseline: np.ndarray, interactive: np.ndarray) -> float:
+    """Paired Cohen's d (Hedges' correction for small n)."""
+    diff = interactive - baseline
+    d = diff.mean() / diff.std(ddof=1) if diff.std(ddof=1) > 0 else 0.0
+    n = len(diff)
+    correction = 1 - 3 / (4 * n - 5)  # Hedges' g
+    return d * correction
+
+
+# ── Load data ──────────────────────────────────────────────────────────────────
+def load_session_data(session_dir: str) -> pd.DataFrame:
+    """Load 4 session CSVs into long-format DataFrame."""
+    rows = []
+    for sess, cond in SESSIONS.items():
+        path = Path(session_dir) / f"auto_eval_session{sess}_{cond}.csv"
+        df = pd.read_csv(path)
+        for _, case in df.iterrows():
+            for p in ALL_PARTICIPANTS:
+                ans_col = f"{p}_answer"
+                time_col = f"{p}_time"
+                rows.append(dict(
+                    session=sess, condition=cond,
+                    note_id=case["note_id"],
+                    difficulty=case["Difficulty"],
+                    gold=case["discharge diagnosis"],
+                    participant=p,
+                    expertise="Senior" if p in SENIORS else "Resident",
+                    answer=case.get(ans_col, ""),
+                    time_s=case.get(time_col, np.nan),
+                ))
+    return pd.DataFrame(rows)
+
+
+def load_manual_data(manual_dir: str) -> pd.DataFrame:
+    """Load 4 manual evaluation CSVs into long-format DataFrame."""
+    rows = []
+    for sess, cond in SESSIONS.items():
+        path = Path(manual_dir) / f"manual_eval_session{sess}_{cond}.csv"
+        if not path.exists():
+            continue
+        df = pd.read_csv(path)
+        for _, case in df.iterrows():
+            for p in ALL_PARTICIPANTS:
+                corr_col = f"{p}_correctness"
+                if corr_col not in df.columns:
+                    continue
+                label = str(case.get(corr_col, "")).strip().upper()
+                rows.append(dict(
+                    session=sess, condition=cond,
+                    note_id=case["note_id"],
+                    difficulty=case["Difficulty"],
+                    participant=p,
+                    expertise="Senior" if p in SENIORS else "Resident",
+                    manual_label=label,
+                    manual_score=MANUAL_SCORES.get(label, np.nan),
+                    manual_binary=0.0 if label == "WRONG" else 1.0,
+                    manual_complete=1.0 if label == "COMPLETELY CORRECT" else 0.0,
+                ))
+    return pd.DataFrame(rows)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PART A: Automated Diagnosis Evaluation
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_part_a(long_df: pd.DataFrame, out_dir: Path, threshold: int,
+               n_boot: int, seed: int):
+    """Compute automated metrics, bootstrap tests, and generate outputs."""
+    print("═" * 60)
+    print("PART A: Automated Diagnosis Evaluation")
+    print("═" * 60)
+
+    # ── A1: Per-case metrics ───────────────────────────────────────────────
+    metrics_list = []
+    for _, row in long_df.iterrows():
+        m = compute_case_metrics(row["answer"], row["gold"], threshold)
+        m["time_min"] = row["time_s"] / 60 if pd.notna(row["time_s"]) else np.nan
+        m.update({k: row[k] for k in
+                  ["session", "condition", "note_id", "difficulty",
+                   "participant", "expertise"]})
+        metrics_list.append(m)
+    mdf = pd.DataFrame(metrics_list)
+    mdf.to_csv(out_dir / "a_case_level_metrics.csv", index=False)
+    print(f"  Case-level metrics: {len(mdf)} rows")
+
+    # ── A2: Participant-level standardised scores ──────────────────────────
+    endpoints = ["any_match", "exact_match", "f1", "precision", "recall", "time_min"]
+    pstd_rows = []
+    for (sess, p), g in mdf.groupby(["session", "participant"]):
+        row = dict(session=sess, participant=p,
+                   condition=SESSIONS[sess],
+                   expertise="Senior" if p in SENIORS else "Resident")
+        for ep in endpoints:
+            row[f"{ep}_std"] = standardize(g, ep)
+        pstd_rows.append(row)
+    pstd = pd.DataFrame(pstd_rows)
+
+    # Aggregate: Baseline = mean(S1,S3), Interactive = mean(S2,S4)
+    agg_rows = []
+    for p in ALL_PARTICIPANTS:
+        for cond in ["baseline", "interactive"]:
+            sub = pstd[(pstd["participant"] == p) & (pstd["condition"] == cond)]
+            row = dict(participant=p, condition=cond,
+                       expertise="Senior" if p in SENIORS else "Resident")
+            for ep in endpoints:
+                row[f"{ep}_std"] = sub[f"{ep}_std"].mean()
+            agg_rows.append(row)
+    agg = pd.DataFrame(agg_rows)
+    agg.to_csv(out_dir / "a_participant_aggregated.csv", index=False)
+
+    # ── A3: Bootstrap tests ────────────────────────────────────────────────
+    test_rows = []
+    for ep in endpoints:
+        col = f"{ep}_std"
+        for group_name, participants in [
+            ("All", ALL_PARTICIPANTS),
+            ("Senior", SENIORS),
+            ("Resident", RESIDENTS),
+        ]:
+            bl = agg[(agg["condition"] == "baseline") &
+                      (agg["participant"].isin(participants))][col].values
+            it = agg[(agg["condition"] == "interactive") &
+                      (agg["participant"].isin(participants))][col].values
+            bt = paired_bootstrap(bl, it, n_boot, seed)
+            bt["endpoint"] = ep
+            bt["group"] = group_name
+            bt["n"] = len(bl)
+            bt["cohens_d"] = cohens_d(bl, it)
+            test_rows.append(bt)
+    tests = pd.DataFrame(test_rows)
+    tests.to_csv(out_dir / "a_bootstrap_tests.csv", index=False)
+    print(f"  Bootstrap tests: {len(tests)} comparisons")
+
+    # ── A4: Threshold sensitivity ──────────────────────────────────────────
+    sweep_rows = []
+    for thr in [60, 65, 70, 75, 80, 85, 90]:
+        for _, row in long_df.iterrows():
+            m = compute_case_metrics(row["answer"], row["gold"], thr)
+            m.update({k: row[k] for k in
+                      ["session", "condition", "participant", "difficulty", "expertise"]})
+            m["threshold"] = thr
+            sweep_rows.append(m)
+    sweep_df = pd.DataFrame(sweep_rows)
+    # Standardise and aggregate
+    sweep_summary = []
+    for thr in [60, 65, 70, 75, 80, 85, 90]:
+        sub = sweep_df[sweep_df["threshold"] == thr]
+        for ep in ["any_match", "f1", "exact_match"]:
+            for cond in ["baseline", "interactive"]:
+                vals = []
+                for p in ALL_PARTICIPANTS:
+                    ps = sub[(sub["participant"] == p) &
+                             (sub["condition"] == cond)]
+                    # average across two sessions of same condition
+                    session_vals = []
+                    for sess in [s for s, c in SESSIONS.items() if c == cond]:
+                        sess_sub = ps[ps["session"] == sess]
+                        session_vals.append(standardize(sess_sub, ep))
+                    vals.append(np.mean(session_vals))
+                sweep_summary.append(dict(
+                    threshold=thr, endpoint=ep, condition=cond,
+                    mean=np.mean(vals), std=np.std(vals),
+                ))
+    pd.DataFrame(sweep_summary).to_csv(
+        out_dir / "a_threshold_sensitivity.csv", index=False)
+
+    # ── A5: Per-case improvement (which cases benefit most?) ───────────────
+    case_imp_rows = []
+    for note_id in mdf["note_id"].unique():
+        for p in ALL_PARTICIPANTS:
+            bl_vals = mdf[(mdf["note_id"] == note_id) &
+                          (mdf["participant"] == p) &
+                          (mdf["condition"] == "baseline")]
+            it_vals = mdf[(mdf["note_id"] == note_id) &
+                          (mdf["participant"] == p) &
+                          (mdf["condition"] == "interactive")]
+            if len(bl_vals) and len(it_vals):
+                case_imp_rows.append(dict(
+                    note_id=note_id, participant=p,
+                    difficulty=bl_vals.iloc[0]["difficulty"],
+                    expertise="Senior" if p in SENIORS else "Resident",
+                    bl_any=bl_vals.iloc[0]["any_match"],
+                    it_any=it_vals.iloc[0]["any_match"],
+                    delta_any=it_vals.iloc[0]["any_match"] - bl_vals.iloc[0]["any_match"],
+                    bl_f1=bl_vals.iloc[0]["f1"],
+                    it_f1=it_vals.iloc[0]["f1"],
+                    delta_f1=it_vals.iloc[0]["f1"] - bl_vals.iloc[0]["f1"],
+                ))
+    # Note: cases appear in different sessions, so each participant sees
+    # each case only once (either baseline or interactive, not both).
+    # Per-case improvement is computed across participants.
+    case_agg = mdf.groupby(["note_id", "condition", "difficulty"]).agg(
+        mean_any=("any_match", "mean"),
+        mean_f1=("f1", "mean"),
+        n=("any_match", "count"),
+    ).reset_index()
+    case_agg.to_csv(out_dir / "a_case_level_by_condition.csv", index=False)
+
+    # ── A6: Difficulty-stratified means ────────────────────────────────────
+    diff_strat = mdf.groupby(["difficulty", "condition", "expertise"]).agg(
+        mean_any=("any_match", "mean"),
+        mean_f1=("f1", "mean"),
+        mean_exact=("exact_match", "mean"),
+        mean_time=("time_min", "mean"),
+        n=("any_match", "count"),
+    ).reset_index()
+    diff_strat.to_csv(out_dir / "a_difficulty_stratified.csv", index=False)
+
+    return mdf, agg, tests
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PART B: Manual Evaluation & Alignment
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_part_b(mdf: pd.DataFrame, manual_df: pd.DataFrame, out_dir: Path,
+               n_boot: int, seed: int):
+    """Manual score analysis and automated-manual alignment."""
+    print("\n" + "═" * 60)
+    print("PART B: Manual Evaluation & Alignment")
+    print("═" * 60)
+
+    if manual_df.empty:
+        print("  No manual evaluation data found. Skipping Part B.")
+        return
+
+    # Merge automated + manual
+    merged = mdf.merge(
+        manual_df[["session", "note_id", "participant",
+                    "manual_label", "manual_score", "manual_binary", "manual_complete"]],
+        on=["session", "note_id", "participant"],
+        how="inner"
+    )
+    merged.to_csv(out_dir / "b_merged_auto_manual.csv", index=False)
+    print(f"  Merged rows: {len(merged)}")
+
+    # ── B1: Manual score bootstrap by condition × expertise ────────────────
+    endpoints_manual = ["manual_score", "manual_binary", "manual_complete"]
+    manual_tests = []
+    for ep in endpoints_manual:
+        pstd_rows = []
+        for (sess, p), g in merged.groupby(["session", "participant"]):
+            pstd_rows.append(dict(
+                session=sess, participant=p,
+                condition=SESSIONS[sess],
+                expertise="Senior" if p in SENIORS else "Resident",
+                value=standardize(g, ep),
+            ))
+        pstd = pd.DataFrame(pstd_rows)
+        # Aggregate across sessions of same condition
+        agg_rows = []
+        for p in ALL_PARTICIPANTS:
+            for cond in ["baseline", "interactive"]:
+                sub = pstd[(pstd["participant"] == p) & (pstd["condition"] == cond)]
+                agg_rows.append(dict(
+                    participant=p, condition=cond,
+                    expertise="Senior" if p in SENIORS else "Resident",
+                    value=sub["value"].mean(),
+                ))
+        agg = pd.DataFrame(agg_rows)
+        for group_name, participants in [
+            ("All", ALL_PARTICIPANTS), ("Senior", SENIORS), ("Resident", RESIDENTS),
+        ]:
+            bl = agg[(agg["condition"] == "baseline") &
+                      (agg["participant"].isin(participants))]["value"].values
+            it = agg[(agg["condition"] == "interactive") &
+                      (agg["participant"].isin(participants))]["value"].values
+            bt = paired_bootstrap(bl, it, n_boot, seed)
+            bt["endpoint"] = ep
+            bt["group"] = group_name
+            bt["cohens_d"] = cohens_d(bl, it)
+            manual_tests.append(bt)
+    pd.DataFrame(manual_tests).to_csv(
+        out_dir / "b_manual_bootstrap_tests.csv", index=False)
+
+    # ── B2: Manual scores by difficulty × expertise × condition ────────────
+    #    (Comment 35: the "selling point" analysis)
+    diff_exp_rows = []
+    for (diff, exp, cond), g in merged.groupby(
+            ["difficulty", "expertise", "condition"]):
+        vals = g["manual_score"].values
+        diff_exp_rows.append(dict(
+            difficulty=diff, expertise=exp, condition=cond,
+            mean=vals.mean(), std=vals.std(),
+            median=np.median(vals),
+            q1=np.percentile(vals, 25), q3=np.percentile(vals, 75),
+            n=len(vals),
+        ))
+    diff_exp = pd.DataFrame(diff_exp_rows)
+    diff_exp.to_csv(out_dir / "b_manual_by_difficulty_expertise.csv", index=False)
+
+    # Bootstrap for difficulty × expertise interaction
+    diff_interaction_tests = []
+    for diff in ["Easy", "Medium", "Hard"]:
+        for group_name, participants in [
+            ("All", ALL_PARTICIPANTS), ("Senior", SENIORS), ("Resident", RESIDENTS),
+        ]:
+            sub = merged[(merged["difficulty"] == diff) &
+                         (merged["participant"].isin(participants))]
+            bl_vals = sub[sub["condition"] == "baseline"]["manual_score"].values
+            it_vals = sub[sub["condition"] == "interactive"]["manual_score"].values
+            if len(bl_vals) > 1 and len(it_vals) > 1:
+                # Non-paired bootstrap (different cases in different conditions)
+                rng = np.random.default_rng(seed)
+                boot_deltas = []
+                for _ in range(n_boot):
+                    bl_s = rng.choice(bl_vals, size=len(bl_vals), replace=True)
+                    it_s = rng.choice(it_vals, size=len(it_vals), replace=True)
+                    boot_deltas.append(it_s.mean() - bl_s.mean())
+                boot_deltas = np.array(boot_deltas)
+                ci_lo, ci_hi = np.percentile(boot_deltas, [2.5, 97.5])
+                p_val = 2 * min((boot_deltas <= 0).mean(),
+                                (boot_deltas >= 0).mean())
+                p_val = max(p_val, 1 / n_boot)
+                diff_interaction_tests.append(dict(
+                    difficulty=diff, group=group_name,
+                    bl_mean=bl_vals.mean(), it_mean=it_vals.mean(),
+                    mean_delta=it_vals.mean() - bl_vals.mean(),
+                    ci_lo=ci_lo, ci_hi=ci_hi, p_value=p_val,
+                    sig=p_val < 0.05,
+                    n_bl=len(bl_vals), n_it=len(it_vals),
+                ))
+    pd.DataFrame(diff_interaction_tests).to_csv(
+        out_dir / "b_manual_difficulty_interaction_tests.csv", index=False)
+    print("  Manual difficulty × expertise interaction tests: done")
+
+    # ── B3: Automated vs manual alignment ──────────────────────────────────
+    # Binary alignment
+    auto_bin = merged["any_match"].values.astype(int)
+    man_bin = merged["manual_binary"].values.astype(int)
+    agree_bin = (auto_bin == man_bin).mean()
+
+    # Confusion matrix (binary)
+    tp = ((auto_bin == 1) & (man_bin == 1)).sum()
+    tn = ((auto_bin == 0) & (man_bin == 0)).sum()
+    fp = ((auto_bin == 1) & (man_bin == 0)).sum()
+    fn = ((auto_bin == 0) & (man_bin == 1)).sum()
+
+    # Cohen's kappa
+    pe = ((tp + fp) * (tp + fn) + (tn + fn) * (tn + fp)) / len(auto_bin) ** 2
+    kappa_bin = (agree_bin - pe) / (1 - pe) if (1 - pe) > 0 else 0
+
+    # 3-class alignment
+    auto_3class = np.where(
+        merged["exact_match"] == 1, "COMPLETELY CORRECT",
+        np.where(merged["any_match"] == 1, "PARTIALLY CORRECT", "WRONG")
+    )
+    man_3class = merged["manual_label"].values
+    agree_3 = (auto_3class == man_3class).mean()
+
+    alignment = dict(
+        binary_agreement=agree_bin, binary_kappa=kappa_bin,
+        binary_tp=int(tp), binary_tn=int(tn),
+        binary_fp=int(fp), binary_fn=int(fn),
+        triclass_agreement=agree_3,
+        n=len(merged),
+    )
+    pd.DataFrame([alignment]).to_csv(
+        out_dir / "b_alignment_coefficients.csv", index=False)
+
+    # Confusion matrix for 3-class
+    labels_3 = ["WRONG", "PARTIALLY CORRECT", "COMPLETELY CORRECT"]
+    conf_3 = pd.crosstab(
+        pd.Categorical(auto_3class, categories=labels_3),
+        pd.Categorical(man_3class, categories=labels_3),
+        rownames=["Automated"], colnames=["Manual"]
+    )
+    conf_3.to_csv(out_dir / "b_confusion_matrix_3class.csv")
+
+    # ── B4: Manual label distribution ──────────────────────────────────────
+    dist = merged.groupby(["expertise", "condition", "manual_label"]).size()
+    dist = dist.unstack(fill_value=0)
+    dist.to_csv(out_dir / "b_manual_label_distribution.csv")
+
+    # Per-session manual summary with CIs
+    session_manual = []
+    for sess in [1, 2, 3, 4]:
+        sub = merged[merged["session"] == sess]
+        for ep in endpoints_manual:
+            vals = sub[ep].values
+            rng = np.random.default_rng(seed)
+            boots = [rng.choice(vals, size=len(vals), replace=True).mean()
+                     for _ in range(4000)]
+            ci_lo, ci_hi = np.percentile(boots, [2.5, 97.5])
+            session_manual.append(dict(
+                session=sess, condition=SESSIONS[sess],
+                endpoint=ep, mean=vals.mean(),
+                ci_lo=ci_lo, ci_hi=ci_hi,
+            ))
+    pd.DataFrame(session_manual).to_csv(
+        out_dir / "b_manual_per_session.csv", index=False)
+
+    return merged
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PART C: Inter-User Concordance
+# ══════════════════════════════════════════════════════════════════════════════
+
+def pairwise_f1(ans_a: str, ans_b: str, threshold: int = 80) -> float:
+    """F1 between two participants' diagnosis sets."""
+    a_list = split_diagnoses(ans_a, is_gold=False)
+    b_list = split_diagnoses(ans_b, is_gold=False)
+    if not a_list and not b_list:
+        return 1.0
+    if not a_list or not b_list:
+        return 0.0
+    m, _ = fuzzy_match_greedy(a_list, b_list, threshold)
+    prec = m / len(a_list) if a_list else 0
+    rec = m / len(b_list) if b_list else 0
+    return 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+
+
+def run_part_c(long_df: pd.DataFrame, out_dir: Path, threshold: int,
+               n_boot: int, seed: int):
+    """Inter-user concordance without ground truth."""
+    print("\n" + "═" * 60)
+    print("PART C: Inter-User Concordance")
+    print("═" * 60)
+
+    conc_rows = []
+    for (sess, note_id), case_group in long_df.groupby(["session", "note_id"]):
+        answers = {row["participant"]: row["answer"]
+                   for _, row in case_group.iterrows()}
+        diff = case_group.iloc[0]["difficulty"]
+        cond = SESSIONS[sess]
+
+        for p in ALL_PARTICIPANTS:
+            if p not in answers:
+                continue
+            p_exp = "Senior" if p in SENIORS else "Resident"
+            # Within-expertise
+            same_exp = [q for q in (SENIORS if p in SENIORS else RESIDENTS)
+                        if q != p and q in answers]
+            if same_exp:
+                within = np.mean([pairwise_f1(answers[p], answers[q], threshold)
+                                  for q in same_exp])
+            else:
+                within = np.nan
+            # Cross-expertise
+            other_exp = [q for q in (RESIDENTS if p in SENIORS else SENIORS)
+                         if q in answers]
+            if other_exp:
+                cross = np.mean([pairwise_f1(answers[p], answers[q], threshold)
+                                 for q in other_exp])
+            else:
+                cross = np.nan
+            conc_rows.append(dict(
+                session=sess, condition=cond, note_id=note_id,
+                difficulty=diff, participant=p, expertise=p_exp,
+                within_expertise_f1=within, cross_expertise_f1=cross,
+            ))
+
+    cdf = pd.DataFrame(conc_rows)
+    cdf.to_csv(out_dir / "c_concordance_case_level.csv", index=False)
+
+    # Standardise and aggregate
+    conc_tests = []
+    for metric in ["within_expertise_f1", "cross_expertise_f1"]:
+        pstd_rows = []
+        for (sess, p), g in cdf.groupby(["session", "participant"]):
+            pstd_rows.append(dict(
+                session=sess, participant=p, condition=SESSIONS[sess],
+                expertise="Senior" if p in SENIORS else "Resident",
+                value=standardize(g, metric),
+            ))
+        pstd = pd.DataFrame(pstd_rows)
+        agg_rows = []
+        for p in ALL_PARTICIPANTS:
+            for cond in ["baseline", "interactive"]:
+                sub = pstd[(pstd["participant"] == p) &
+                           (pstd["condition"] == cond)]
+                agg_rows.append(dict(
+                    participant=p, condition=cond,
+                    expertise="Senior" if p in SENIORS else "Resident",
+                    value=sub["value"].mean(),
+                ))
+        agg = pd.DataFrame(agg_rows)
+        for group_name, participants in [
+            ("All", ALL_PARTICIPANTS), ("Senior", SENIORS), ("Resident", RESIDENTS),
+        ]:
+            bl = agg[(agg["condition"] == "baseline") &
+                      (agg["participant"].isin(participants))]["value"].values
+            it = agg[(agg["condition"] == "interactive") &
+                      (agg["participant"].isin(participants))]["value"].values
+            bt = paired_bootstrap(bl, it, n_boot, seed)
+            bt["endpoint"] = metric
+            bt["group"] = group_name
+            bt["cohens_d"] = cohens_d(bl, it)
+            conc_tests.append(bt)
+    pd.DataFrame(conc_tests).to_csv(
+        out_dir / "c_concordance_bootstrap_tests.csv", index=False)
+    print(f"  Concordance tests: {len(conc_tests)} comparisons")
+
+    # Concordance by difficulty
+    conc_by_diff = cdf.groupby(["difficulty", "condition", "expertise"]).agg(
+        mean_within=("within_expertise_f1", "mean"),
+        mean_cross=("cross_expertise_f1", "mean"),
+        n=("within_expertise_f1", "count"),
+    ).reset_index()
+    conc_by_diff.to_csv(out_dir / "c_concordance_by_difficulty.csv", index=False)
+
+    return cdf
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FIGURES
+# ══════════════════════════════════════════════════════════════════════════════
+
+def generate_figures(mdf, agg, tests, merged, cdf, out_dir, fig_dir):
+    """Generate all publication-quality figures."""
+    print("\n" + "═" * 60)
+    print("GENERATING FIGURES")
+    print("═" * 60)
+
+    fig_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Figure 1: Paired trajectories ──────────────────────────────────────
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    for idx, (ep, title) in enumerate([
+        ("any_match_std", "Any-match accuracy"),
+        ("exact_match_std", "Exact-match accuracy"),
+        ("f1_std", "Diagnosis-set F1"),
+        ("time_min_std", "Time per case (minutes)"),
+    ]):
+        ax = axes[idx // 2][idx % 2]
+        for p in ALL_PARTICIPANTS:
+            exp = "Senior" if p in SENIORS else "Resident"
+            color = PALETTE[exp]
+            bl = agg[(agg["participant"] == p) &
+                      (agg["condition"] == "baseline")][ep].values
+            it = agg[(agg["participant"] == p) &
+                      (agg["condition"] == "interactive")][ep].values
+            if len(bl) and len(it):
+                ax.plot(["Baseline", "Interactive"], [bl[0], it[0]],
+                        "o-", color=color, alpha=0.7, markersize=6,
+                        label=exp if idx == 0 and p in [SENIORS[0], RESIDENTS[0]] else "")
+        # Boxplots
+        for ci, cond in enumerate(["Baseline", "Interactive"]):
+            cond_key = cond.lower()
+            for ei, (exp, parts) in enumerate([("Senior", SENIORS), ("Resident", RESIDENTS)]):
+                vals = agg[(agg["condition"] == cond_key) &
+                           (agg["participant"].isin(parts))][ep].values
+                pos = ci + (ei - 0.5) * 0.3
+                bp = ax.boxplot([vals], positions=[pos], widths=0.2,
+                                patch_artist=True, showfliers=False)
+                bp["boxes"][0].set_facecolor(PALETTE[exp])
+                bp["boxes"][0].set_alpha(0.3)
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(["Baseline", "Interactive"])
+        ax.grid(axis="y", alpha=0.3)
+    axes[0][0].legend(loc="upper left", fontsize=9)
+    plt.tight_layout()
+    plt.savefig(fig_dir / "fig_paired_trajectories.png", dpi=FIG_DPI,
+                bbox_inches="tight")
+    plt.close()
+    print("  fig_paired_trajectories.png")
+
+    # ── Figure 2: Metrics by difficulty × condition × expertise ────────────
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    for idx, (ep, title) in enumerate([
+        ("any_match", "Any-match accuracy"),
+        ("f1", "F1"),
+        ("time_min", "Time (min)"),
+    ]):
+        ax = axes[idx]
+        diff_order = ["Easy", "Medium", "Hard"]
+        x = np.arange(len(diff_order))
+        width = 0.2
+        for gi, (exp, cond, ls) in enumerate([
+            ("Senior", "baseline", "--"), ("Senior", "interactive", "-"),
+            ("Resident", "baseline", "--"), ("Resident", "interactive", "-"),
+        ]):
+            vals = []
+            errs = []
+            for diff in diff_order:
+                sub = mdf[(mdf["difficulty"] == diff) &
+                          (mdf["condition"] == cond) &
+                          (mdf["expertise"] == exp)]
+                vals.append(sub[ep].mean())
+                errs.append(sub[ep].sem())
+            offset = (gi - 1.5) * width
+            color = PALETTE[exp]
+            alpha = 1.0 if cond == "interactive" else 0.5
+            label = f"{exp} - {cond.capitalize()}"
+            ax.bar(x + offset, vals, width, yerr=errs, color=color,
+                   alpha=alpha, label=label, capsize=3)
+        ax.set_xticks(x)
+        ax.set_xticklabels(diff_order)
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        ax.set_xlabel("Difficulty")
+        ax.grid(axis="y", alpha=0.3)
+        if idx == 0:
+            ax.legend(fontsize=8, loc="upper right")
+    plt.tight_layout()
+    plt.savefig(fig_dir / "fig_metrics_by_difficulty.png", dpi=FIG_DPI,
+                bbox_inches="tight")
+    plt.close()
+    print("  fig_metrics_by_difficulty.png")
+
+    # ── Figure 3: Manual 3-class distribution ──────────────────────────────
+    if merged is not None and not merged.empty:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        groups = [("Senior", "baseline"), ("Senior", "interactive"),
+                  ("Resident", "baseline"), ("Resident", "interactive")]
+        labels = [f"{e}\n{c.capitalize()}" for e, c in groups]
+        colors_3 = {"WRONG": "#d73027", "PARTIALLY CORRECT": "#fee08b",
+                     "COMPLETELY CORRECT": "#1a9850"}
+        bottoms = np.zeros(len(groups))
+        for cat in ["WRONG", "PARTIALLY CORRECT", "COMPLETELY CORRECT"]:
+            vals = []
+            for exp, cond in groups:
+                sub = merged[(merged["expertise"] == exp) &
+                             (merged["condition"] == cond)]
+                vals.append((sub["manual_label"] == cat).mean())
+            ax.bar(labels, vals, bottom=bottoms, color=colors_3[cat],
+                   label=cat.title(), edgecolor="white", linewidth=0.5)
+            bottoms += vals
+        ax.set_ylabel("Proportion of cases")
+        ax.set_title("Manual correctness distribution by expertise and condition",
+                     fontsize=12, fontweight="bold")
+        ax.legend(loc="lower right", fontsize=9)
+        ax.set_ylim(0, 1.05)
+        ax.grid(axis="y", alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(fig_dir / "fig_manual_distribution.png", dpi=FIG_DPI,
+                    bbox_inches="tight")
+        plt.close()
+        print("  fig_manual_distribution.png")
+
+        # ── Figure 4: Manual score by difficulty × expertise × condition ───
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        for ax_idx, (ep, title) in enumerate([
+            ("manual_score", "Manual ordinal score (0/0.5/1)"),
+            ("manual_complete", "Completely correct rate"),
+        ]):
+            ax = axes[ax_idx]
+            diff_order = ["Easy", "Medium", "Hard"]
+            x = np.arange(len(diff_order))
+            width = 0.2
+            for gi, (exp, cond) in enumerate([
+                ("Senior", "baseline"), ("Senior", "interactive"),
+                ("Resident", "baseline"), ("Resident", "interactive"),
+            ]):
+                vals = []
+                errs = []
+                for diff in diff_order:
+                    sub = merged[(merged["difficulty"] == diff) &
+                                 (merged["condition"] == cond) &
+                                 (merged["expertise"] == exp)]
+                    vals.append(sub[ep].mean())
+                    errs.append(sub[ep].sem())
+                offset = (gi - 1.5) * width
+                color = PALETTE[exp]
+                alpha = 1.0 if cond == "interactive" else 0.5
+                label = f"{exp} - {cond.capitalize()}"
+                ax.bar(x + offset, vals, width, yerr=errs, color=color,
+                       alpha=alpha, label=label, capsize=3)
+            ax.set_xticks(x)
+            ax.set_xticklabels(diff_order)
+            ax.set_title(title, fontsize=12, fontweight="bold")
+            ax.set_xlabel("Difficulty")
+            ax.grid(axis="y", alpha=0.3)
+            if ax_idx == 0:
+                ax.legend(fontsize=8)
+        plt.tight_layout()
+        plt.savefig(fig_dir / "fig_manual_by_difficulty.png", dpi=FIG_DPI,
+                    bbox_inches="tight")
+        plt.close()
+        print("  fig_manual_by_difficulty.png")
+
+        # ── Figure 5: Confusion matrices ───────────────────────────────────
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        # Binary
+        ax = axes[0]
+        auto_bin = merged["any_match"].values.astype(int)
+        man_bin = merged["manual_binary"].values.astype(int)
+        conf_bin = np.array([
+            [(auto_bin == r).sum() - ((auto_bin == r) & (man_bin == 1)).sum()
+             if c == 0 else ((auto_bin == r) & (man_bin == 1)).sum()
+             for c in [0, 1]]
+            for r in [0, 1]
+        ])
+        # Recompute properly
+        conf_bin = np.zeros((2, 2), dtype=int)
+        for a, m in zip(auto_bin, man_bin):
+            conf_bin[a][m] += 1
+        im = ax.imshow(conf_bin, cmap="YlOrBr", aspect="auto")
+        for i in range(2):
+            for j in range(2):
+                ax.text(j, i, str(conf_bin[i, j]), ha="center", va="center",
+                        fontsize=14, fontweight="bold")
+        ax.set_xticks([0, 1])
+        ax.set_yticks([0, 1])
+        ax.set_xticklabels(["Wrong", "Correct"])
+        ax.set_yticklabels(["No match", "Any match"])
+        ax.set_xlabel("Manual label")
+        ax.set_ylabel("Automated label")
+        ax.set_title("Binary: auto any-match vs manual", fontweight="bold")
+
+        # 3-class
+        ax = axes[1]
+        labels_3 = ["Wrong", "Partially\ncorrect", "Completely\ncorrect"]
+        auto_3 = np.where(
+            merged["exact_match"] == 1, 2,
+            np.where(merged["any_match"] == 1, 1, 0)
+        )
+        man_3 = np.where(
+            merged["manual_label"] == "COMPLETELY CORRECT", 2,
+            np.where(merged["manual_label"] == "PARTIALLY CORRECT", 1, 0)
+        )
+        conf_3 = np.zeros((3, 3), dtype=int)
+        for a, m in zip(auto_3, man_3):
+            conf_3[a][m] += 1
+        im = ax.imshow(conf_3, cmap="YlOrBr", aspect="auto")
+        for i in range(3):
+            for j in range(3):
+                ax.text(j, i, str(conf_3[i, j]), ha="center", va="center",
+                        fontsize=14, fontweight="bold")
+        ax.set_xticks([0, 1, 2])
+        ax.set_yticks([0, 1, 2])
+        ax.set_xticklabels(labels_3, fontsize=9)
+        ax.set_yticklabels(labels_3, fontsize=9)
+        ax.set_xlabel("Manual label")
+        ax.set_ylabel("Automated label")
+        ax.set_title("3-class: automated vs manual", fontweight="bold")
+
+        plt.tight_layout()
+        plt.savefig(fig_dir / "fig_confusion_matrices.png", dpi=FIG_DPI,
+                    bbox_inches="tight")
+        plt.close()
+        print("  fig_confusion_matrices.png")
+
+    # ── Figure 6: Concordance ──────────────────────────────────────────────
+    if cdf is not None and not cdf.empty:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        for ax_idx, (metric, title) in enumerate([
+            ("within_expertise_f1", "Within-expertise concordance"),
+            ("cross_expertise_f1", "Cross-expertise concordance"),
+        ]):
+            ax = axes[ax_idx]
+            diff_order = ["Easy", "Medium", "Hard"]
+            x = np.arange(len(diff_order))
+            width = 0.2
+            for gi, (exp, cond) in enumerate([
+                ("Senior", "baseline"), ("Senior", "interactive"),
+                ("Resident", "baseline"), ("Resident", "interactive"),
+            ]):
+                vals = []
+                errs = []
+                for diff in diff_order:
+                    sub = cdf[(cdf["difficulty"] == diff) &
+                              (cdf["condition"] == cond) &
+                              (cdf["expertise"] == exp)]
+                    vals.append(sub[metric].mean())
+                    errs.append(sub[metric].sem())
+                offset = (gi - 1.5) * width
+                color = PALETTE[exp]
+                alpha = 1.0 if cond == "interactive" else 0.5
+                label = f"{exp} - {cond.capitalize()}"
+                ax.bar(x + offset, vals, width, yerr=errs, color=color,
+                       alpha=alpha, label=label, capsize=3)
+            ax.set_xticks(x)
+            ax.set_xticklabels(diff_order)
+            ax.set_title(title, fontsize=12, fontweight="bold")
+            ax.set_xlabel("Difficulty")
+            ax.grid(axis="y", alpha=0.3)
+            if ax_idx == 0:
+                ax.legend(fontsize=8)
+        plt.tight_layout()
+        plt.savefig(fig_dir / "fig_concordance_by_difficulty.png", dpi=FIG_DPI,
+                    bbox_inches="tight")
+        plt.close()
+        print("  fig_concordance_by_difficulty.png")
+
+    # ── Figure 7: Threshold sensitivity ────────────────────────────────────
+    sweep = pd.read_csv(out_dir / "a_threshold_sensitivity.csv")
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+    for idx, ep in enumerate(["any_match", "f1", "exact_match"]):
+        ax = axes[idx]
+        for cond, ls in [("baseline", "--"), ("interactive", "-")]:
+            sub = sweep[(sweep["endpoint"] == ep) & (sweep["condition"] == cond)]
+            ax.plot(sub["threshold"], sub["mean"], f"{ls}o",
+                    color=COND_PALETTE[cond.capitalize()],
+                    label=cond.capitalize(), markersize=5)
+            ax.fill_between(sub["threshold"],
+                            sub["mean"] - sub["std"],
+                            sub["mean"] + sub["std"],
+                            color=COND_PALETTE[cond.capitalize()], alpha=0.15)
+        ax.set_xlabel("Matching threshold")
+        ax.set_title(ep.replace("_", " ").title(), fontweight="bold")
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig(fig_dir / "fig_threshold_sensitivity.png", dpi=FIG_DPI,
+                bbox_inches="tight")
+    plt.close()
+    print("  fig_threshold_sensitivity.png")
+
+    print("  All figures generated.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════════════════════
+
+def main():
+    parser = argparse.ArgumentParser(description="MedSyn Unified Evaluation")
+    parser.add_argument("--session_dir", default="eval/session_outputs")
+    parser.add_argument("--manual_dir", default="eval/manual_eval/inputs")
+    parser.add_argument("--out_dir", default="eval/results")
+    parser.add_argument("--threshold", type=int, default=80)
+    parser.add_argument("--bootstrap_n", type=int, default=20000)
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args()
+
+    out_dir = Path(args.out_dir)
+    fig_dir = out_dir / "figures"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Configuration:")
+    print(f"  Threshold: {args.threshold}")
+    print(f"  Bootstrap replicates: {args.bootstrap_n}")
+    print(f"  Seed: {args.seed}")
+    print(f"  Output: {out_dir}")
+    print()
+
+    # Save config
+    config = vars(args)
+    with open(out_dir / "config.json", "w") as f:
+        json.dump(config, f, indent=2)
+
+    # Load data
+    long_df = load_session_data(args.session_dir)
+    manual_df = load_manual_data(args.manual_dir)
+    print(f"Loaded: {len(long_df)} observations, "
+          f"{len(manual_df)} manual labels\n")
+
+    # Run parts
+    mdf, agg, tests = run_part_a(long_df, out_dir, args.threshold,
+                                  args.bootstrap_n, args.seed)
+    merged = run_part_b(mdf, manual_df, out_dir, args.bootstrap_n, args.seed)
+    cdf = run_part_c(long_df, out_dir, args.threshold,
+                      args.bootstrap_n, args.seed)
+
+    # Generate figures
+    generate_figures(mdf, agg, tests, merged, cdf, out_dir, fig_dir)
+
+    # Print key results summary
+    print("\n" + "═" * 60)
+    print("KEY RESULTS SUMMARY")
+    print("═" * 60)
+    sig_tests = tests[tests["sig"]]
+    for _, t in tests.iterrows():
+        star = "***" if t["p_value"] < 0.001 else ("**" if t["p_value"] < 0.01
+               else ("*" if t["sig"] else ""))
+        print(f"  {t['endpoint']:15s} | {t['group']:8s} | "
+              f"Δ={t['mean_delta']:+.3f} | "
+              f"CI=[{t['ci_lo']:.3f}, {t['ci_hi']:.3f}] | "
+              f"p={t['p_value']:.4f} {star} | "
+              f"d={t['cohens_d']:.2f}")
+
+    print(f"\nAll outputs saved to {out_dir}/")
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()

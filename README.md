@@ -28,9 +28,9 @@ Key directories and files:
 - `reverse-proxy/`
   - Nginx config used in the deployment.
 - `eval/`
-  - `evaluate_diagnosis*.py` – diagnosis accuracy evaluation scripts.
-  - `evaluate_dialogues.py` – aggregates dialogue metrics (baseline vs interactive).
-  - `auto_eval/`, `ablation_eval/` – more detailed evaluation tooling.
+  - `run_evaluation.py` – unified diagnosis evaluation (automated metrics, manual alignment, concordance).
+  - `run_dialogue_eval.py` – dialogue quality evaluation with optional LLM-as-judge scoring.
+  - `ablation_eval/` – ablation study scripts.
 - `public/`
   - `thank-you.html` – thank-you + survey page used in the interactive condition.
 - `docker-compose.yml`, `Dockerfile`
@@ -205,45 +205,88 @@ To reproduce the experiments you must:
 
 ---
 
-## 6. Dialogue and diagnosis evaluation
+## 6. Evaluation
 
-### 6.1 Dialogue metrics (baseline vs interactive)
+All evaluations can be reproduced from the two scripts in `eval/`. The input CSVs (session outputs, manual labels, dialogue logs) are not tracked by git because they contain clinical text.
 
-After running clinician sessions, the app writes per-session CSVs and dialogue logs to `output/` (not tracked by git).
-
-To analyze the conversation patterns, use:
+### 6.1 Setup
 
 ```bash
-pip install -r requirements.txt
-
-python eval/evaluate_dialogues.py     --base-output-dir output
+python3 -m venv .venv
+source .venv/bin/activate
+pip install pandas numpy rapidfuzz matplotlib scipy python-docx scikit-learn openai
 ```
 
-This script will:
+### 6.2 Diagnosis evaluation (Parts A-C)
 
-- Read `output/dialogues/dialogue_*.jsonl` and the corresponding `out_*.csv` files.
-- Aggregate per-case metrics:
-  - `n_user_turns_nonfinal`, `n_llm_turns`
-  - `user_chars_total`, `llm_chars_total`
-  - `time_spent_seconds` (if present)
-  - `final_answer_from_log`, `ground_truth_discharge`, etc.
-- Save:
-  - `output/analysis/case_level_metrics.csv`
-  - `output/analysis/summary_by_mode.csv`
+`eval/run_evaluation.py` runs three evaluation components in sequence:
 
-You can then perform further analysis (e.g., statistical tests, plotting) using these CSVs.
+- **Part A – Automated diagnosis metrics:** Compares clinician answers to ground-truth discharge diagnoses using fuzzy matching (RapidFuzz `token_set_ratio`, threshold=80). Computes exact match, any-match, precision, recall, F1, and time per case. Uses difficulty-weighted standardization (Easy=3/13, Medium=6/13, Hard=4/13) and paired bootstrap (20,000 replicates) for statistical testing. Reports Cohen's d effect sizes.
+- **Part B – Manual evaluation alignment:** Compares automated fuzzy-match labels against expert clinician annotations (3-class: WRONG / PARTIALLY CORRECT / COMPLETELY CORRECT). Computes confusion matrices, binary/tri-class agreement, and Cohen's kappa.
+- **Part C – Inter-user concordance:** Measures pairwise diagnosis-set F1 between participants (ground-truth independent) to quantify agreement within and across expertise groups.
 
-### 6.2 Diagnosis accuracy and multi-metric evaluation
+**Usage:**
 
-The `eval/` folder also contains:
+```bash
+python eval/run_evaluation.py \
+  --session_dir eval/session_outputs \
+  --manual_dir eval/manual_eval/inputs \
+  --out_dir eval/results \
+  --threshold 80 \
+  --bootstrap_n 20000 \
+  --seed 42
+```
 
-- `eval/evaluate_diagnosis.py`, `eval/evaluate_diagnosis_with_primary.py` – diagnosis-matching logic.
-- `eval/auto_eval/` – scripts for computing:
-  - exact match, any-match, precision/recall/F1, Jaccard, ROUGE, BERTScore, etc.
-- `eval/ablation_eval/` – scripts and configs used for ablations.
+**Required input files** (not tracked):
+- `eval/session_outputs/auto_eval_session{1,2,3,4}_{baseline,interactive}.csv` — 13 cases × 7 participants per session.
+- `eval/manual_eval/inputs/manual_eval_session{1,2,3,4}_{baseline,interactive}.csv` — same structure with `{participant}_correctness` columns.
 
-All evaluation scripts rely only on:
+**Outputs** (saved to `--out_dir`):
+- CSVs: case-level metrics, bootstrap tests, confusion matrices, concordance analysis, threshold sensitivity.
+- Figures (400 DPI): paired trajectories, metrics by difficulty, manual label distributions, concordance, threshold sweep.
 
-- CSV outputs in `output/` plus
-- The same input data that is *not* included in the repo.
+### 6.3 Dialogue evaluation (Part D)
+
+`eval/run_dialogue_eval.py` evaluates the quality of interactive dialogue turns from Sessions 2 and 4.
+
+- **Heuristic metrics:** question categorization (detail/info/suggestion/other), answer specificity, context overlap.
+- **LLM-as-judge** (optional): per-turn faithfulness and answer-relevancy scores via OpenRouter. Uses `google/gemini-2.5-flash` by default to avoid self-evaluation bias (the assistant uses GPT).
+
+**Usage:**
+
+```bash
+# Without LLM judge (free, heuristic metrics only):
+python eval/run_dialogue_eval.py \
+  --turn_csv eval/dial-eval/turn_level.csv \
+  --case_csv eval/dial-eval/case_level.csv \
+  --session2_notes eval/session_outputs/auto_eval_session2_interactive.csv \
+  --session4_notes eval/session_outputs/auto_eval_session4_interactive.csv \
+  --out_dir eval/results/dialogue
+
+# With LLM judge (~$0.70 via OpenRouter):
+export OPENROUTER_API_KEY=sk-or-v1-...
+python eval/run_dialogue_eval.py \
+  --turn_csv eval/dial-eval/turn_level.csv \
+  --case_csv eval/dial-eval/case_level.csv \
+  --session2_notes eval/session_outputs/auto_eval_session2_interactive.csv \
+  --session4_notes eval/session_outputs/auto_eval_session4_interactive.csv \
+  --out_dir eval/results/dialogue \
+  --run_llm_judge \
+  --judge_model google/gemini-2.5-flash
+```
+
+**Required input files** (not tracked):
+- `eval/dial-eval/turn_level.csv` — 829 dialogue turns (parsed from session dialogues).
+- `eval/dial-eval/case_level.csv` — 182 case-level dialogue summaries.
+- Session note CSVs (same as Part A) for building clinical context.
+
+**Outputs:**
+- CSVs: scored turns, judge summary, question categories, statistical comparisons.
+- Figures (400 DPI): turns per case, question categories, answer quality, judge scores, judge by category.
+
+### 6.4 Ablation studies
+
+```bash
+python eval/ablation_eval/evaluate_ablation.py --help
+```
 
