@@ -673,6 +673,8 @@ def generate_figures(mdf, agg, tests, merged, cdf, out_dir, fig_dir):
 
     # ── Figure 1: Paired trajectories ──────────────────────────────────────
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    # Offset for each expertise group so lines align with their box plots
+    exp_offset = {"Senior": -0.15, "Resident": 0.15}
     for idx, (ep, title) in enumerate([
         ("any_match_std", "Any-match accuracy"),
         ("exact_match_std", "Exact-match accuracy"),
@@ -680,28 +682,35 @@ def generate_figures(mdf, agg, tests, merged, cdf, out_dir, fig_dir):
         ("time_min_std", "Time per case (minutes)"),
     ]):
         ax = axes[idx // 2][idx % 2]
-        for p in ALL_PARTICIPANTS:
-            exp = "Senior" if p in SENIORS else "Resident"
-            color = PALETTE[exp]
-            bl = agg[(agg["participant"] == p) &
-                      (agg["condition"] == "baseline")][ep].values
-            it = agg[(agg["participant"] == p) &
-                      (agg["condition"] == "interactive")][ep].values
-            if len(bl) and len(it):
-                ax.plot(["Baseline", "Interactive"], [bl[0], it[0]],
-                        "o-", color=color, alpha=0.7, markersize=6,
-                        label=exp if idx == 0 and p in [SENIORS[0], RESIDENTS[0]] else "")
-        # Boxplots
+        # Draw box plots first (behind lines)
         for ci, cond in enumerate(["Baseline", "Interactive"]):
             cond_key = cond.lower()
             for ei, (exp, parts) in enumerate([("Senior", SENIORS), ("Resident", RESIDENTS)]):
                 vals = agg[(agg["condition"] == cond_key) &
                            (agg["participant"].isin(parts))][ep].values
-                pos = ci + (ei - 0.5) * 0.3
+                pos = ci + exp_offset[exp]
                 bp = ax.boxplot([vals], positions=[pos], widths=0.2,
-                                patch_artist=True, showfliers=False)
+                                patch_artist=True, showfliers=False,
+                                zorder=1)
                 bp["boxes"][0].set_facecolor(PALETTE[exp])
                 bp["boxes"][0].set_alpha(0.3)
+                for element in ['whiskers', 'caps', 'medians']:
+                    for line in bp[element]:
+                        line.set_alpha(0.5)
+        # Draw individual participant lines on top
+        for p in ALL_PARTICIPANTS:
+            exp = "Senior" if p in SENIORS else "Resident"
+            color = PALETTE[exp]
+            off = exp_offset[exp]
+            bl = agg[(agg["participant"] == p) &
+                      (agg["condition"] == "baseline")][ep].values
+            it = agg[(agg["participant"] == p) &
+                      (agg["condition"] == "interactive")][ep].values
+            if len(bl) and len(it):
+                ax.plot([0 + off, 1 + off], [bl[0], it[0]],
+                        "o-", color=color, alpha=0.7, markersize=6,
+                        zorder=2,
+                        label=exp if idx == 0 and p in [SENIORS[0], RESIDENTS[0]] else "")
         ax.set_title(title, fontsize=12, fontweight="bold")
         ax.set_xticks([0, 1])
         ax.set_xticklabels(["Baseline", "Interactive"])
@@ -714,13 +723,14 @@ def generate_figures(mdf, agg, tests, merged, cdf, out_dir, fig_dir):
     print("  fig_paired_trajectories.png")
 
     # ── Figure 2: Metrics by difficulty × condition × expertise ────────────
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     for idx, (ep, title) in enumerate([
         ("any_match", "Any-match accuracy"),
+        ("exact_match", "Exact-match accuracy"),
         ("f1", "F1"),
         ("time_min", "Time (min)"),
     ]):
-        ax = axes[idx]
+        ax = axes[idx // 2][idx % 2]
         diff_order = ["Easy", "Medium", "Hard"]
         x = np.arange(len(diff_order))
         width = 0.2
@@ -953,6 +963,313 @@ def generate_figures(mdf, agg, tests, merged, cdf, out_dir, fig_dir):
                 bbox_inches="tight")
     plt.close()
     print("  fig_threshold_sensitivity.png")
+
+    # ── Figure 8: Across-sessions trajectory (S1→S2→S3→S4) ─────────────
+    # Compute per-session standardised means by expertise group
+    sess_agg = []
+    for (sess, p), g in mdf.groupby(["session", "participant"]):
+        row = dict(session=sess, participant=p,
+                   expertise="Senior" if p in SENIORS else "Resident")
+        for ep in ["any_match", "exact_match", "f1", "time_min"]:
+            row[ep] = standardize(g, ep)
+        sess_agg.append(row)
+    sess_df = pd.DataFrame(sess_agg)
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    for idx, (ep, ylabel) in enumerate([
+        ("any_match", "Any-match accuracy"),
+        ("exact_match", "Exact-match accuracy"),
+        ("f1", "Diagnosis-set F1"),
+        ("time_min", "Time per case (min)"),
+    ]):
+        ax = axes[idx // 2][idx % 2]
+        for exp, parts in [("Senior", SENIORS), ("Resident", RESIDENTS)]:
+            means = []
+            sems = []
+            for s in [1, 2, 3, 4]:
+                vals = sess_df[(sess_df["session"] == s) &
+                               (sess_df["expertise"] == exp)][ep].values
+                means.append(vals.mean())
+                sems.append(vals.std(ddof=1) / np.sqrt(len(vals)) if len(vals) > 1 else 0)
+            ax.errorbar([1, 2, 3, 4], means, yerr=sems, marker="o",
+                        color=PALETTE[exp], label=exp, linewidth=2,
+                        capsize=4, markersize=7)
+        # Shade interactive sessions
+        ax.axvspan(1.5, 2.5, alpha=0.08, color="#af8dc3")
+        ax.axvspan(3.5, 4.5, alpha=0.08, color="#af8dc3")
+        ax.set_xticks([1, 2, 3, 4])
+        ax.set_xticklabels(["S1\n(Baseline)", "S2\n(Interactive)",
+                             "S3\n(Baseline)", "S4\n(Interactive)"])
+        ax.set_ylabel(ylabel)
+        ax.set_title(ylabel, fontsize=12, fontweight="bold")
+        ax.grid(axis="y", alpha=0.3)
+        ax.legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig(fig_dir / "fig_across_sessions.png", dpi=FIG_DPI,
+                bbox_inches="tight")
+    plt.close()
+    print("  fig_across_sessions.png")
+
+    # ── Figure 9: Expertise gap narrowing by difficulty ───────────────────
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    for idx, (ep, title) in enumerate([
+        ("any_match", "Any-match accuracy gap"),
+        ("exact_match", "Exact-match accuracy gap"),
+        ("f1", "F1 gap"),
+        ("time_min", "Time gap (min)"),
+    ]):
+        ax = axes[idx // 2][idx % 2]
+        diff_order = ["Easy", "Medium", "Hard"]
+        for cond, ls, marker in [("baseline", "--", "s"), ("interactive", "-", "o")]:
+            gaps = []
+            for diff in diff_order:
+                senior_vals = mdf[(mdf["difficulty"] == diff) &
+                                   (mdf["condition"] == cond) &
+                                   (mdf["expertise"] == "Senior")][ep].mean()
+                resident_vals = mdf[(mdf["difficulty"] == diff) &
+                                     (mdf["condition"] == cond) &
+                                     (mdf["expertise"] == "Resident")][ep].mean()
+                gaps.append(senior_vals - resident_vals)
+            ax.plot(diff_order, gaps, f"{ls}{marker}",
+                    color=COND_PALETTE[cond.capitalize()],
+                    label=cond.capitalize(), linewidth=2, markersize=8)
+        ax.axhline(0, color="gray", linestyle=":", alpha=0.5)
+        ax.set_xlabel("Difficulty")
+        ax.set_ylabel("Gap (Senior − Resident)")
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        ax.grid(axis="y", alpha=0.3)
+        ax.legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig(fig_dir / "fig_expertise_gap.png", dpi=FIG_DPI,
+                bbox_inches="tight")
+    plt.close()
+    print("  fig_expertise_gap.png")
+
+    # ── Figure 10: Ablation model comparison ─────────────────────────────
+    ablation_dir = Path("eval/ablation_eval/results")
+    bl_path = ablation_dir / "baseline_summary_primary.csv"
+    it_path = ablation_dir / "interactive_summary_primary.csv"
+    if bl_path.exists() and it_path.exists():
+        bl_abl = pd.read_csv(bl_path)
+        it_abl = pd.read_csv(it_path)
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        metrics_abl = ["micro_precision", "micro_recall", "micro_f1"]
+        metric_labels = ["Precision", "Recall", "F1"]
+        model_colors = {
+            "gpt-5.2-chat": "#2166ac",
+            "gpt-oss-120b": "#4393c3",
+            "gemini-3-pro-preview": "#92c5de",
+            "llama-4-scout": "#f4a582",
+            "gpt-5.1": "#d6604d",
+            "gpt-5.1-chat": "#d6604d",
+        }
+
+        for ax_idx, (abl_df, scenario) in enumerate([
+            (bl_abl, "Baseline scenario"),
+            (it_abl, "Interactive scenario"),
+        ]):
+            ax = axes[ax_idx]
+            x = np.arange(len(metrics_abl))
+            n_models = len(abl_df)
+            width = 0.8 / n_models
+            for mi, (_, row) in enumerate(abl_df.iterrows()):
+                model = row["model"]
+                vals = [row[m] for m in metrics_abl]
+                offset = (mi - n_models / 2 + 0.5) * width
+                color = model_colors.get(model, "#999999")
+                short_name = model.replace("-chat", "").replace("-preview", "")
+                ax.bar(x + offset, vals, width, label=short_name,
+                       color=color, edgecolor="white", linewidth=0.5)
+            ax.set_xticks(x)
+            ax.set_xticklabels(metric_labels)
+            ax.set_ylim(0, 1.0)
+            ax.set_title(scenario, fontsize=12, fontweight="bold")
+            ax.grid(axis="y", alpha=0.3)
+            ax.legend(fontsize=7, loc="upper left")
+        plt.tight_layout()
+        plt.savefig(fig_dir / "fig_ablation_comparison.png", dpi=FIG_DPI,
+                    bbox_inches="tight")
+        plt.close()
+        print("  fig_ablation_comparison.png")
+    else:
+        print("  [SKIP] Ablation CSVs not found; skipping ablation figure.")
+
+    # ── Figure 11: Forest plot of improvement effects (bootstrap) ────────
+    fig, ax = plt.subplots(figsize=(8, 7))
+    plot_rows = []
+    for _, t in tests.iterrows():
+        plot_rows.append(t)
+    # Order: group within endpoint
+    ep_order = ["any_match", "exact_match", "f1", "precision", "recall", "time_min"]
+    ep_labels = {"any_match": "Any-match", "exact_match": "Exact-match",
+                 "f1": "Diagnosis-set F1", "precision": "Precision",
+                 "recall": "Recall", "time_min": "Time (min)"}
+    grp_order = ["All", "Senior", "Resident"]
+    grp_colors = {"All": "#333333", "Senior": "#2166ac", "Resident": "#b2182b"}
+    grp_markers = {"All": "D", "Senior": "s", "Resident": "o"}
+    y_pos = 0
+    y_labels = []
+    y_positions = []
+    for ep in ep_order:
+        for grp in grp_order:
+            t = tests[(tests["endpoint"] == ep) & (tests["group"] == grp)]
+            if len(t) == 0:
+                continue
+            t = t.iloc[0]
+            color = grp_colors[grp]
+            marker = grp_markers[grp]
+            facecolor = color if t["sig"] else "white"
+            ax.errorbar(t["mean_delta"], y_pos,
+                        xerr=[[t["mean_delta"] - t["ci_lo"]],
+                              [t["ci_hi"] - t["mean_delta"]]],
+                        fmt=marker, color=color, markerfacecolor=facecolor,
+                        markersize=8, capsize=4, linewidth=1.5,
+                        markeredgewidth=1.5)
+            label = f"  {ep_labels[ep]} ({grp})"
+            sig_str = ""
+            if t["p_value"] < 0.001:
+                sig_str = " ***"
+            elif t["p_value"] < 0.01:
+                sig_str = " **"
+            elif t["sig"]:
+                sig_str = " *"
+            y_labels.append(f"{label}{sig_str}")
+            y_positions.append(y_pos)
+            y_pos += 1
+        y_pos += 0.5  # gap between endpoints
+    ax.axvline(0, color="gray", linestyle="--", alpha=0.5)
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(y_labels, fontsize=9)
+    ax.set_xlabel("Mean improvement (Interactive − Baseline)", fontsize=11)
+    ax.set_title("Effect sizes with 95% bootstrap CIs", fontsize=12,
+                 fontweight="bold")
+    ax.invert_yaxis()
+    ax.grid(axis="x", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(fig_dir / "fig_forest_plot.png", dpi=FIG_DPI,
+                bbox_inches="tight")
+    plt.close()
+    print("  fig_forest_plot.png")
+
+    # ── Figure 12: Overall baseline vs interactive grouped bar ────────────
+    fig, axes = plt.subplots(1, 4, figsize=(16, 5))
+    for idx, (ep, title) in enumerate([
+        ("any_match_std", "Any-match accuracy"),
+        ("exact_match_std", "Exact-match accuracy"),
+        ("f1_std", "Diagnosis-set F1"),
+        ("time_min_std", "Time per case (min)"),
+    ]):
+        ax = axes[idx]
+        x = np.arange(2)  # Senior, Resident
+        width = 0.35
+        for ci, (cond, alpha_val) in enumerate([("baseline", 0.5), ("interactive", 1.0)]):
+            vals = []
+            errs = []
+            for exp, parts in [("Senior", SENIORS), ("Resident", RESIDENTS)]:
+                sub = agg[(agg["condition"] == cond) &
+                          (agg["participant"].isin(parts))][ep]
+                vals.append(sub.mean())
+                errs.append(sub.sem())
+            offset = (ci - 0.5) * width
+            ax.bar(x + offset, vals, width, yerr=errs, capsize=4,
+                   color=[PALETTE["Senior"], PALETTE["Resident"]],
+                   alpha=alpha_val,
+                   label=cond.capitalize() if idx == 0 else "",
+                   edgecolor="white", linewidth=0.5)
+        ax.set_xticks(x)
+        ax.set_xticklabels(["Senior", "Resident"])
+        ax.set_title(title, fontsize=11, fontweight="bold")
+        ax.grid(axis="y", alpha=0.3)
+    axes[0].legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig(fig_dir / "fig_overall_comparison.png", dpi=FIG_DPI,
+                bbox_inches="tight")
+    plt.close()
+    print("  fig_overall_comparison.png")
+
+    # ── Figure 13: Per-session performance (with error bars) ──────────────
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    for idx, (ep, title) in enumerate([
+        ("any_match", "Any-match accuracy"),
+        ("exact_match", "Exact-match accuracy"),
+        ("f1", "Diagnosis-set F1"),
+        ("time_min", "Time per case (min)"),
+    ]):
+        ax = axes[idx // 2][idx % 2]
+        sessions = [1, 2, 3, 4]
+        x = np.arange(len(sessions))
+        width = 0.35
+        for ei, (exp, parts) in enumerate([("Senior", SENIORS), ("Resident", RESIDENTS)]):
+            means = []
+            sems = []
+            for s in sessions:
+                # Compute standardized per-participant for this session
+                sess_vals = []
+                for p in parts:
+                    pdata = mdf[(mdf["session"] == s) & (mdf["participant"] == p)]
+                    if len(pdata):
+                        sess_vals.append(standardize(pdata, ep))
+                means.append(np.mean(sess_vals) if sess_vals else 0)
+                sems.append(np.std(sess_vals, ddof=1) / np.sqrt(len(sess_vals))
+                            if len(sess_vals) > 1 else 0)
+            offset = (ei - 0.5) * width
+            ax.bar(x + offset, means, width, yerr=sems, capsize=4,
+                   color=PALETTE[exp], label=exp if idx == 0 else "",
+                   edgecolor="white", linewidth=0.5)
+        # Shade interactive sessions
+        ax.axvspan(0.5, 1.5, alpha=0.06, color="#af8dc3")
+        ax.axvspan(2.5, 3.5, alpha=0.06, color="#af8dc3")
+        ax.set_xticks(x)
+        ax.set_xticklabels(["S1\n(Baseline)", "S2\n(Interactive)",
+                             "S3\n(Baseline)", "S4\n(Interactive)"])
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        ax.grid(axis="y", alpha=0.3)
+    axes[0][0].legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig(fig_dir / "fig_per_session_bars.png", dpi=FIG_DPI,
+                bbox_inches="tight")
+    plt.close()
+    print("  fig_per_session_bars.png")
+
+    # ── Figure 14: Manual evaluation per-session summary ──────────────────
+    if merged is not None and not merged.empty:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        sessions_m = [1, 2, 3, 4]
+        for ax_idx, (ep, title) in enumerate([
+            ("manual_score", "Ordinal score (0 / 0.5 / 1)"),
+            ("manual_binary", "Binary correctness"),
+            ("manual_complete", "Completely correct rate"),
+        ]):
+            ax = axes[ax_idx]
+            x = np.arange(len(sessions_m))
+            width = 0.35
+            for ei, (exp, parts) in enumerate([("Senior", SENIORS),
+                                                ("Resident", RESIDENTS)]):
+                means = []
+                sems = []
+                for s in sessions_m:
+                    sub = merged[(merged["session"] == s) &
+                                 (merged["expertise"] == exp)]
+                    means.append(sub[ep].mean() if len(sub) else 0)
+                    sems.append(sub[ep].sem() if len(sub) > 1 else 0)
+                offset = (ei - 0.5) * width
+                ax.bar(x + offset, means, width, yerr=sems, capsize=4,
+                       color=PALETTE[exp], label=exp if ax_idx == 0 else "",
+                       edgecolor="white", linewidth=0.5)
+            ax.axvspan(0.5, 1.5, alpha=0.06, color="#af8dc3")
+            ax.axvspan(2.5, 3.5, alpha=0.06, color="#af8dc3")
+            ax.set_xticks(x)
+            ax.set_xticklabels(["S1\n(Baseline)", "S2\n(Interactive)",
+                                 "S3\n(Baseline)", "S4\n(Interactive)"])
+            ax.set_title(title, fontsize=12, fontweight="bold")
+            ax.grid(axis="y", alpha=0.3)
+        axes[0].legend(fontsize=9)
+        plt.tight_layout()
+        plt.savefig(fig_dir / "fig_manual_per_session.png", dpi=FIG_DPI,
+                    bbox_inches="tight")
+        plt.close()
+        print("  fig_manual_per_session.png")
 
     print("  All figures generated.")
 

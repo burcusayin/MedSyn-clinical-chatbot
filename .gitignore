@@ -78,13 +78,8 @@ consent_forms/
 # --- Evaluation artifacts (clinical text, results, reports) ---
 eval/session_outputs/
 eval/ablation_eval/inputs/
-eval/auto_eval/results/
 eval/manual_eval/inputs/
 eval/dial-eval/*.csv
-eval/dial-eval/test_run_out/
-eval/dial-eval/figures/
-eval/dial-eval/*.docx
-eval/dial-eval/*.pdf
-eval/final eval files.zip
+eval/results/dialogue/
 eval/results/
 eval/*.docx

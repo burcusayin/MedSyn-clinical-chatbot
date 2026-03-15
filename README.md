@@ -193,7 +193,7 @@ By design:
   ```gitignore
   eval/session_outputs/
   eval/ablation_eval/inputs/
-  eval/auto_eval/results/
+  eval/dial-eval/*.csv
   ```
 
 To reproduce the experiments you must:
@@ -241,9 +241,48 @@ python eval/run_evaluation.py \
 - `eval/session_outputs/auto_eval_session{1,2,3,4}_{baseline,interactive}.csv` — 13 cases × 7 participants per session.
 - `eval/manual_eval/inputs/manual_eval_session{1,2,3,4}_{baseline,interactive}.csv` — same structure with `{participant}_correctness` columns.
 
+**Required CSV columns** for session files:
+- `note_id` — unique case identifier.
+- `Difficulty` — one of `Easy`, `Medium`, `Hard`.
+- `discharge diagnosis` — ground-truth diagnosis string (semicolon-separated if multiple).
+- `{participant}_answer` — one column per participant (e.g. `phy1_answer`, `res3_answer`).
+- `{participant}_time` — time in seconds for each participant-case.
+
+Participants are hard-coded as `phy1, phy2, phy3` (Senior) and `res1, res3, res5, res6` (Resident). Sessions map as: S1/S3 = baseline, S2/S4 = interactive.
+
+**Required CSV columns** for manual evaluation files:
+- `note_id`, `Difficulty` — same as above.
+- `{participant}_correctness` — one of `COMPLETELY CORRECT`, `PARTIALLY CORRECT`, or `WRONG`.
+
 **Outputs** (saved to `--out_dir`):
-- CSVs: case-level metrics, bootstrap tests, confusion matrices, concordance analysis, threshold sensitivity.
-- Figures (400 DPI): paired trajectories, metrics by difficulty, manual label distributions, concordance, threshold sweep.
+
+CSVs:
+- `a_case_level_long.csv` — per participant-case fuzzy-match metrics.
+- `a_participant_aggregated.csv` — difficulty-standardised per-participant averages.
+- `a_bootstrap_tests.csv` — 18 paired bootstrap tests (6 metrics × 3 groups).
+- `a_difficulty_stratified.csv` — performance by difficulty × expertise × condition.
+- `a_threshold_sensitivity.csv` — metrics across thresholds 60–90.
+- `b_manual_per_session.csv` — blinded manual evaluation per session.
+- `b_alignment_coefficients.csv` — Cohen's kappa, agreement statistics.
+- `c_concordance_case_level.csv` — pairwise F1 per participant-case.
+- `c_concordance_bootstrap_tests.csv` — 6 concordance bootstrap tests.
+- `c_concordance_by_difficulty.csv` — concordance by difficulty level.
+
+Figures (400 DPI, saved to `--out_dir/figures/`):
+- `fig_paired_trajectories.png` — slopegraph of individual participant changes (baseline → interactive).
+- `fig_metrics_by_difficulty.png` — any-match, exact-match, F1, time by difficulty × expertise × condition.
+- `fig_manual_distribution.png` — stacked bar of wrong/partial/complete by group and condition.
+- `fig_manual_by_difficulty.png` — manual scores stratified by difficulty.
+- `fig_manual_per_session.png` — ordinal score, binary, and completely-correct rate per session.
+- `fig_confusion_matrices.png` — automated vs manual evaluation agreement.
+- `fig_concordance_by_difficulty.png` — within- and cross-expertise concordance by difficulty.
+- `fig_threshold_sensitivity.png` — metric robustness across fuzzy-matching thresholds.
+- `fig_across_sessions.png` — S1→S2→S3→S4 trajectory by expertise group.
+- `fig_expertise_gap.png` — Senior-minus-Resident gap by difficulty and condition.
+- `fig_ablation_comparison.png` — 5-model precision/recall/F1 comparison (requires ablation results).
+- `fig_forest_plot.png` — forest plot of all bootstrap effect sizes with 95% CIs.
+- `fig_overall_comparison.png` — grouped bar of performance by expertise and condition.
+- `fig_per_session_bars.png` — per-session performance by expertise.
 
 ### 6.3 Dialogue evaluation (Part D)
 
@@ -280,13 +319,50 @@ python eval/run_dialogue_eval.py \
 - `eval/dial-eval/case_level.csv` — 182 case-level dialogue summaries.
 - Session note CSVs (same as Part A) for building clinical context.
 
-**Outputs:**
-- CSVs: scored turns, judge summary, question categories, statistical comparisons.
-- Figures (400 DPI): turns per case, question categories, answer quality, judge scores, judge by category.
+**Outputs** (saved to `--out_dir`):
 
-### 6.4 Ablation studies
+CSVs:
+- `case_summary.csv` — mean turns and duration per session × expertise group.
+- `question_categories.csv` — question-type counts and proportions.
+- `statistical_comparisons.csv` — Mann-Whitney U tests for group and session comparisons.
+- `judge_summary.csv` — mean faithfulness and relevancy per group/session (if `--run_llm_judge`).
+
+Figures (400 DPI, saved to `--out_dir/figures/`):
+- `fig_dial_turns_per_case.png` — mean turns per case by expertise and session.
+- `fig_dial_question_categories.png` — stacked bar of question types.
+- `fig_dial_answer_quality.png` — box plots of answer specificity and context overlap.
+- `fig_dial_judge_scores.png` — box plots of faithfulness and relevancy (if judge was run).
+- `fig_dial_judge_by_category.png` — faithfulness/relevancy by question type.
+- `fig_dial_duration_vs_turns.png` — scatter plot of case duration vs turn count.
+
+### 6.4 Ablation study
+
+`eval/ablation_eval/evaluate_ablation.py` evaluates multiple LLMs on the same 52 cases under both baseline and interactive scenarios to justify model selection.
+
+It uses a lower fuzzy-matching threshold (62) than the physician evaluation (80) because LLM outputs tend to use more standardised medical terminology.
+
+**Usage:**
 
 ```bash
-python eval/ablation_eval/evaluate_ablation.py --help
+python eval/ablation_eval/evaluate_ablation.py \
+  --baseline eval/ablation_eval/inputs/baseline_outputs.csv \
+  --interactive eval/ablation_eval/inputs/interactive_outputs.csv \
+  --outdir eval/ablation_eval/results \
+  --threshold 62 \
+  --sweep \
+  --bootstrap 2000
 ```
+
+**Required input files** (not tracked):
+- `eval/ablation_eval/inputs/baseline_outputs.csv` — one column per model with generated diagnoses for each of the 52 cases in the baseline (full-note) scenario.
+- `eval/ablation_eval/inputs/interactive_outputs.csv` — same structure for the interactive (dialogue) scenario.
+
+Both CSVs must contain `note_id`, `discharge diagnosis`, and `Difficulty` columns, plus one output column per model.
+
+**Outputs** (saved to `--outdir`):
+- `{scenario}_summary_primary.csv` — micro precision, recall, F1, top-1 accuracy, and average prediction count per model.
+- `{scenario}_per_case_primary.csv` — per-case match details.
+- `{scenario}_by_difficulty_primary.csv` — metrics stratified by Easy/Medium/Hard.
+- `{scenario}_bootstrap_primary.csv` — bootstrap CIs (if `--bootstrap > 0`).
+- `{scenario}_threshold_sweep_primary.csv` — metrics across thresholds (if `--sweep`).
 

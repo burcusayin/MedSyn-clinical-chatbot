@@ -139,7 +139,7 @@ def create_assistant_agent(ass_prompt: str) -> lr.ChatAgent:
         # with "openrouter/".
         #
         # ASS_MODEL should be a full OpenRouter model id such as
-        #   "openai/gpt-4o" or "anthropic/claude-3.5-sonnet"
+        #   "openai/gpt-4o" or "google/gemini-2.5-flash"
         cfg = lm.OpenAIGPTConfig(
             timeout=180,
             chat_context_length=1_040_000,
