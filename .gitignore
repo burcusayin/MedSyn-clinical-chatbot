@@ -83,3 +83,6 @@ eval/dial-eval/*.csv
 eval/results/dialogue/
 eval/results/
 eval/*.docx
+
+# --- Paper drafts ---
+docs/

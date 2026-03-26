@@ -445,6 +445,37 @@ def run_part_b(mdf: pd.DataFrame, manual_df: pd.DataFrame, out_dir: Path,
     diff_exp = pd.DataFrame(diff_exp_rows)
     diff_exp.to_csv(out_dir / "b_manual_by_difficulty_expertise.csv", index=False)
 
+    # Detailed summary table with median, IQR, and deltas per difficulty × expertise
+    # Uses participant-level means (averaged across sessions of same condition)
+    # to match the boxplot figure methodology
+    detail_rows = []
+    for diff in ["Easy", "Medium", "Hard"]:
+        for exp in ["Senior", "Resident"]:
+            for cond, prefix in [("baseline", "bl"), ("interactive", "it")]:
+                sub = merged[(merged["difficulty"] == diff) &
+                             (merged["condition"] == cond) &
+                             (merged["expertise"] == exp)]
+                pmeans = sub.groupby("participant")["manual_score"].mean()
+                if prefix == "bl":
+                    bl_pmeans = pmeans
+                else:
+                    it_pmeans = pmeans
+            if len(bl_pmeans) and len(it_pmeans):
+                detail_rows.append(dict(
+                    difficulty=diff, expertise=exp,
+                    bl_median=bl_pmeans.median(),
+                    bl_iqr=f"{bl_pmeans.quantile(0.25):.3f}-{bl_pmeans.quantile(0.75):.3f}",
+                    bl_mean=bl_pmeans.mean(), bl_n=int(len(bl_pmeans)),
+                    it_median=it_pmeans.median(),
+                    it_iqr=f"{it_pmeans.quantile(0.25):.3f}-{it_pmeans.quantile(0.75):.3f}",
+                    it_mean=it_pmeans.mean(), it_n=int(len(it_pmeans)),
+                    mean_delta=it_pmeans.mean() - bl_pmeans.mean(),
+                    median_delta=it_pmeans.median() - bl_pmeans.median(),
+                ))
+    pd.DataFrame(detail_rows).to_csv(
+        out_dir / "b_manual_detail_table.csv", index=False)
+    print("  b_manual_detail_table.csv")
+
     # Bootstrap for difficulty × expertise interaction
     diff_interaction_tests = []
     for diff in ["Easy", "Medium", "Hard"]:
@@ -796,40 +827,102 @@ def generate_figures(mdf, agg, tests, merged, cdf, out_dir, fig_dir):
         print("  fig_manual_distribution.png")
 
         # ── Figure 4: Manual score by difficulty × expertise × condition ───
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        for ax_idx, (ep, title) in enumerate([
-            ("manual_score", "Manual ordinal score (0/0.5/1)"),
-            ("manual_complete", "Completely correct rate"),
-        ]):
-            ax = axes[ax_idx]
-            diff_order = ["Easy", "Medium", "Hard"]
-            x = np.arange(len(diff_order))
-            width = 0.2
-            for gi, (exp, cond) in enumerate([
-                ("Senior", "baseline"), ("Senior", "interactive"),
-                ("Resident", "baseline"), ("Resident", "interactive"),
-            ]):
-                vals = []
-                errs = []
-                for diff in diff_order:
-                    sub = merged[(merged["difficulty"] == diff) &
-                                 (merged["condition"] == cond) &
-                                 (merged["expertise"] == exp)]
-                    vals.append(sub[ep].mean())
-                    errs.append(sub[ep].sem())
-                offset = (gi - 1.5) * width
+        # Boxplot version matching original style (clean, minimal color)
+        # Load interaction test p-values for annotation
+        _int_test_path = out_dir / "b_manual_difficulty_interaction_tests.csv"
+        _int_tests = {}
+        if _int_test_path.exists():
+            _idf = pd.read_csv(_int_test_path)
+            for _, row in _idf.iterrows():
+                _int_tests[(row["difficulty"], row["group"])] = row["p_value"]
+
+        diff_order = ["Easy", "Medium", "Hard"]
+        groups = [
+            ("Senior", "baseline", "S-B"),
+            ("Senior", "interactive", "S-I"),
+            ("Resident", "baseline", "R-B"),
+            ("Resident", "interactive", "R-I"),
+        ]
+        fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+        bp_data = []
+        bp_colors = []
+        positions = []
+        tick_labels = []
+        pos = 0
+        for di, diff in enumerate(diff_order):
+            if di > 0:
+                pos += 1.2  # gap between difficulty groups
+            for gi, (exp, cond, label) in enumerate(groups):
+                sub = merged[(merged["difficulty"] == diff) &
+                             (merged["condition"] == cond) &
+                             (merged["expertise"] == exp)]
+                # Per-participant means (averaged across sessions of same
+                # condition), matching the v3 report methodology
+                participant_means = sub.groupby(
+                    "participant")["manual_score"].mean().values
+                bp_data.append(participant_means)
+                positions.append(pos)
+                tick_labels.append(f"{diff}\n{label}")
                 color = PALETTE[exp]
-                alpha = 1.0 if cond == "interactive" else 0.5
-                label = f"{exp} - {cond.capitalize()}"
-                ax.bar(x + offset, vals, width, yerr=errs, color=color,
-                       alpha=alpha, label=label, capsize=3)
-            ax.set_xticks(x)
-            ax.set_xticklabels(diff_order)
-            ax.set_title(title, fontsize=12, fontweight="bold")
-            ax.set_xlabel("Difficulty")
-            ax.grid(axis="y", alpha=0.3)
-            if ax_idx == 0:
-                ax.legend(fontsize=8)
+                alpha = 0.35 if cond == "baseline" else 0.7
+                bp_colors.append((color, alpha))
+                pos += 1
+
+        from matplotlib.colors import to_rgba
+        bp = ax.boxplot(bp_data, positions=positions, widths=0.65,
+                        patch_artist=True, showmeans=False,
+                        medianprops=dict(color="darkorange", linewidth=1.5),
+                        whiskerprops=dict(color="black", linewidth=0.8),
+                        capprops=dict(color="black", linewidth=0.8),
+                        flierprops=dict(marker="o", markerfacecolor="gray",
+                                        markersize=4, alpha=0.5,
+                                        markeredgecolor="gray"))
+        for patch, (color, alpha) in zip(bp["boxes"], bp_colors):
+            patch.set_facecolor(to_rgba(color, alpha))
+            patch.set_edgecolor(color)
+            patch.set_linewidth(0.8)
+
+        ax.set_xticks(positions)
+        ax.set_xticklabels(tick_labels, fontsize=8)
+        ax.set_ylabel("Ordinal Correctness Score", fontsize=10)
+        ax.set_title("Blinded Manual Assessment by Difficulty, Expertise, and Condition",
+                     fontsize=11, fontweight="bold")
+        ax.grid(axis="y", alpha=0.3)
+
+        # Add p-value brackets for Resident baseline→interactive per difficulty
+        for di, diff in enumerate(diff_order):
+            p = _int_tests.get((diff, "Resident"))
+            if p is not None:
+                rb_pos = positions[di * 4 + 2]
+                ri_pos = positions[di * 4 + 3]
+                # Find max whisker top for these two boxes
+                rb_idx = di * 4 + 2
+                ri_idx = di * 4 + 3
+                top = max(bp["whiskers"][rb_idx * 2 + 1].get_ydata().max(),
+                          bp["whiskers"][ri_idx * 2 + 1].get_ydata().max())
+                y = top + 0.03
+                ax.plot([rb_pos, rb_pos, ri_pos, ri_pos],
+                        [y, y + 0.02, y + 0.02, y],
+                        color="black", linewidth=0.8)
+                p_str = f"p = {p:.3f}" if p >= 0.001 else "p < 0.001"
+                ax.text((rb_pos + ri_pos) / 2, y + 0.025, p_str,
+                        ha="center", va="bottom", fontsize=7)
+
+        # Legend
+        from matplotlib.patches import Patch
+        from matplotlib.colors import to_rgba as _to_rgba
+        legend_elements = [
+            Patch(facecolor=_to_rgba(PALETTE["Senior"], 0.35),
+                  edgecolor=PALETTE["Senior"], label="Senior - Baseline"),
+            Patch(facecolor=_to_rgba(PALETTE["Senior"], 0.7),
+                  edgecolor=PALETTE["Senior"], label="Senior - Interactive"),
+            Patch(facecolor=_to_rgba(PALETTE["Resident"], 0.35),
+                  edgecolor=PALETTE["Resident"], label="Resident - Baseline"),
+            Patch(facecolor=_to_rgba(PALETTE["Resident"], 0.7),
+                  edgecolor=PALETTE["Resident"], label="Resident - Interactive"),
+        ]
+        ax.legend(handles=legend_elements, fontsize=8, loc="lower left")
+
         plt.tight_layout()
         plt.savefig(fig_dir / "fig_manual_by_difficulty.png", dpi=FIG_DPI,
                     bbox_inches="tight")
