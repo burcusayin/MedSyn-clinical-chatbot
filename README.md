@@ -51,10 +51,17 @@ Key directories and files:
 - Docker + Docker Compose (for reproducible deployment).
 - An OpenRouter account and API key (for interactive sessions with commercial LLMs).
 
-Python dependencies are listed in `requirements.txt`:
+Python dependencies are listed in `requirements.txt` (app) and `eval/requirements.txt` (evaluation pipeline):
 
 ```bash
+# App dependencies (Chainlit, Langroid, etc.)
 pip install -r requirements.txt
+
+# Evaluation dependencies (rapidfuzz, matplotlib, scipy, etc.)
+pip install -r eval/requirements.txt
+```
+
+---
 
 ## 3. Environment configuration
 
@@ -214,7 +221,7 @@ All evaluations can be reproduced from the two scripts in `eval/`. The input CSV
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install pandas numpy rapidfuzz matplotlib scipy python-docx scikit-learn openai
+pip install -r eval/requirements.txt
 ```
 
 ### 6.2 Diagnosis evaluation (Parts A-C)
