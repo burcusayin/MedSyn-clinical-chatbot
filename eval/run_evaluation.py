@@ -577,6 +577,50 @@ def run_part_b(mdf: pd.DataFrame, manual_df: pd.DataFrame, out_dir: Path,
     pd.DataFrame(session_manual).to_csv(
         out_dir / "b_manual_per_session.csv", index=False)
 
+    # ── B5: Difficulty-standardised strict binary manual bootstrap ─────────
+    # Mirrors Table 1 (Part A) but uses manual completely-correct rate
+    # (COMPLETELY CORRECT = 1, PARTIALLY CORRECT + WRONG = 0).
+    merged["manual_complete"] = (merged["manual_label"] == "COMPLETELY CORRECT").astype(float)
+
+    strict_records = []
+    for participant in ALL_PARTICIPANTS:
+        for cond in ["baseline", "interactive"]:
+            sub = merged[(merged["participant"] == participant) &
+                         (merged["condition"] == cond)]
+            weighted = sum(
+                DIFF_WEIGHTS[d] * sub[sub["difficulty"] == d]["manual_complete"].mean()
+                for d in DIFF_WEIGHTS
+                if len(sub[sub["difficulty"] == d]) > 0
+            )
+            strict_records.append(dict(
+                participant=participant, condition=cond,
+                expertise="Senior" if participant in SENIORS else "Resident",
+                std_complete_rate=weighted,
+            ))
+    strict_df = pd.DataFrame(strict_records)
+    strict_df.to_csv(out_dir / "b_manual_strict_participant.csv", index=False)
+
+    strict_tests = []
+    for group_name, participants in [("All", ALL_PARTICIPANTS),
+                                     ("Senior", SENIORS),
+                                     ("Resident", RESIDENTS)]:
+        bl = strict_df[(strict_df["condition"] == "baseline") &
+                       (strict_df["participant"].isin(participants))
+                       ].sort_values("participant")["std_complete_rate"].values
+        it = strict_df[(strict_df["condition"] == "interactive") &
+                       (strict_df["participant"].isin(participants))
+                       ].sort_values("participant")["std_complete_rate"].values
+        result = paired_bootstrap(bl, it, n_boot, seed)
+        result["cohens_d"] = cohens_d(bl, it)
+        result["endpoint"] = "complete_rate"
+        result["group"] = group_name
+        result["n"] = len(bl)
+        strict_tests.append(result)
+
+    pd.DataFrame(strict_tests).to_csv(
+        out_dir / "b_manual_strict_bootstrap.csv", index=False)
+    print("  Manual strict binary (completely-correct rate) bootstrap: done")
+
     return merged
 
 

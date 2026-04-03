@@ -270,7 +270,13 @@ CSVs:
 - `a_difficulty_stratified.csv` — performance by difficulty × expertise × condition.
 - `a_threshold_sensitivity.csv` — metrics across thresholds 60–90.
 - `b_manual_per_session.csv` — blinded manual evaluation per session.
+- `b_manual_detail_table.csv` — participant-level manual scores by difficulty × expertise.
+- `b_manual_difficulty_interaction_tests.csv` — bootstrap tests per difficulty × expertise cell.
+- `b_manual_strict_participant.csv` — difficulty-standardised completely-correct rate per participant.
+- `b_manual_strict_bootstrap.csv` — paired bootstrap on strict binary manual scores (mirrors Table 1).
 - `b_alignment_coefficients.csv` — Cohen's kappa, agreement statistics.
+- `b_confusion_matrix_3class.csv` — 3-class confusion matrix (automated vs manual).
+- `b_manual_label_distribution.csv` — manual label counts by expertise and condition.
 - `c_concordance_case_level.csv` — pairwise F1 per participant-case.
 - `c_concordance_bootstrap_tests.csv` — 6 concordance bootstrap tests.
 - `c_concordance_by_difficulty.csv` — concordance by difficulty level.
