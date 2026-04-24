@@ -1,13 +1,32 @@
 # MedSyn – Clinical Decision Support Chatbot
 
-MedSyn is a clinical decision-support chatbot for internal medicine that we use in controlled user studies with clinicians.  
+Companion code for the paper:
 
-It supports two experimental conditions:
+> **Human–LLM Dialogue Improves Diagnostic Accuracy in Emergency Care.**
+> Sayin, B., Vo Hong, N., Osti, N., Susca, N., Maino, A., Baris Schlicht, I., Staiano, J., Minervini, P., Allievi, S., Racanelli, V., Passerini, A. *(under review at npj Digital Medicine, 2026)*.
 
-- **Baseline:** clinicians receive the full clinical note and write diagnoses without AI assistance.
-- **Interactive:** clinicians see only the chief complaint and interact with an LLM assistant; once confident, they write their final diagnoses.
+MedSyn is a clinical decision-support chatbot for emergency/internal medicine used in controlled user studies with physicians. It supports two experimental conditions:
 
-This repository contains the **code and configuration** needed to reproduce the deployment and the analysis, but **does not include any clinical data or user logs**.
+- **Baseline:** physicians receive the full clinical note and write diagnoses without AI assistance.
+- **Interactive:** physicians see only the chief complaint and interact with an LLM assistant; once confident, they write their final diagnoses.
+
+This repository contains the **code, configuration, and evaluation pipeline** needed to reproduce the deployment and the analyses reported in the paper. For privacy and licensing reasons, **no clinical data or participant-level outputs are included**; reproducing the user study requires PhysioNet credentialing for MIMIC-IV access.
+
+## Reproducibility at a glance
+
+- All statistical tests are paired bootstrap with **20,000 replicates, seed 42**, percentile CIs, two-sided p-values.
+- Effect sizes are **Hedges' g** (small-sample-corrected Cohen's d).
+- Fuzzy matching uses **RapidFuzz `token_set_ratio`** with similarity threshold **80** for physician diagnoses (threshold 62 for the model-selection ablation).
+- Difficulty standardisation weights: Easy 3/13, Medium 6/13, Hard 4/13.
+- Python **3.10+**. The `.venv` + `eval/requirements.txt` environment deterministically reproduces every number in the paper.
+
+## Citation
+
+If you use this code, please cite the paper above. A BibTeX entry will be added upon publication.
+
+## License
+
+Code is released for research reproducibility. Please see the repository's LICENSE file (if present) or contact the corresponding author for usage terms.
 
 ---
 
