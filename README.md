@@ -26,7 +26,7 @@ If you use this code, please cite the paper above. A BibTeX entry will be added 
 
 ## License
 
-Code is released for research reproducibility. Please see the repository's LICENSE file (if present) or contact the corresponding author for usage terms.
+Released under the [MIT License](LICENSE). This software is for research purposes only and not intended for clinical use.
 
 ---
 
