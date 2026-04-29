@@ -3,7 +3,7 @@
 Companion code for the paper:
 
 > **Human–LLM Dialogue Improves Diagnostic Accuracy in Emergency Care.**
-> Sayin, B., Vo Hong, N., Osti, N., Susca, N., Maino, A., Baris Schlicht, I., Staiano, J., Minervini, P., Allievi, S., Racanelli, V., Passerini, A. *(under review at npj Digital Medicine, 2026)*.
+> Sayin, B., Vo Hong, N., Baris Schlicht, I., Staiano, J., Minervini, P., Allievi, S., Susca, N., Osti, N., Maino, A., Racanelli, V., Passerini, A. *(under review at npj Digital Medicine, 2026)*.
 
 MedSyn is a clinical decision-support chatbot for emergency/internal medicine used in controlled user studies with physicians. It supports two experimental conditions:
 
