@@ -398,3 +398,25 @@ Both CSVs must contain `note_id`, `discharge diagnosis`, and `Difficulty` column
 - `{scenario}_bootstrap_primary.csv` — bootstrap CIs (if `--bootstrap > 0`).
 - `{scenario}_threshold_sweep_primary.csv` — metrics across thresholds (if `--sweep`).
 
+# Citation
+
+If you use this code or our paper, please cite us:
+```
+@article{sayin2026humanllmdialogueimprovesdiagnostic,
+      title={Human-LLM Dialogue Improves Diagnostic Accuracy in Emergency Care}, 
+      author={Burcu Sayin and Ngoc Vo Hong and Ipek Baris Schlicht and Jacopo Staiano and Pasquale Minervini and Sara Allievi and Nicola Susca and Nicola Osti and Alberto Maino and Vito Racanelli and Andrea Passerini},
+      year={2026},
+      volume={abs/2605.08533},
+      journal={arXiv},
+      url={https://arxiv.org/abs/2605.08533}
+}
+
+@software{medsynClinicalChatbot,
+  author = {Burcu Sayin and Ngoc Vo Hong and Ipek Baris Schlicht and Jacopo Staiano and Pasquale Minervini and Sara Allievi and Nicola Susca and Nicola Osti and Alberto Maino and Vito Racanelli and Andrea Passerini},
+  title = {Human-LLM Dialogue Improves Diagnostic Accuracy in Emergency Care},
+  month = May,
+  year = 2026,
+  url = {https://github.com/burcusayin/MedSyn-clinical-chatbot}
+}
+```
+
