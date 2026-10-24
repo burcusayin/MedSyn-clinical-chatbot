@@ -2,7 +2,7 @@ pandas
 numpy
 scikit-learn
 chainlit
-langroid
+langroid>=0.69.14   # >= 0.69.14: OpenAICallParams.extra_body, needed by the OpenRouter privacy guard
 ollama
 passlib[bcrypt]==1.7.4
 bcrypt==3.2.2

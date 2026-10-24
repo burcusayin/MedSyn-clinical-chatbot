@@ -222,6 +222,44 @@ By design:
   eval/dial-eval/*.csv
   ```
 
+### 5.1 Privacy guard for OpenRouter requests
+
+MedSyn sends de-identified clinical text to language models through the OpenRouter API. PhysioNet's
+guidance on using credentialed data with generative-AI services
+(<https://physionet.org/news/post/gpt-responsible-use>) does not allow credentialed data to be sent through
+third-party APIs that may retain or review it, and names Azure OpenAI (with the human-review opt-out) as the
+acceptable route for OpenAI models.
+
+Every OpenRouter request made by this code base (the Chainlit app, the Langroid simulation endpoint, the
+LLM-as-judge evaluation and the contamination probes) therefore carries OpenRouter *provider preferences*
+built by `src/openrouter_privacy.py`:
+
+- `zdr: true` – zero-data-retention endpoints only;
+- `data_collection: "deny"` – no providers that store or train on inputs;
+- for OpenAI's proprietary models (`openai/gpt-*`, not the open-weight `gpt-oss-*`), `order: ["Azure"]`,
+  `allow_fallbacks: false` – the Azure endpoint only.
+
+A request that cannot be served under these constraints **fails instead of being rerouted**. This also
+means that a model for which OpenRouter lists no zero-data-retention endpoint cannot be used with clinical
+text under the guard (on 2026-10-24 this was the case for `google/gemini-2.5-flash`, served only by Google
+AI Studio); choose a model with a zero-retention endpoint instead. The app also
+checks, when the assistant is created and before any request is sent, that the installed Langroid version
+actually forwards the preferences (it fails closed otherwise), and the evaluation scripts stop if OpenRouter reports a provider outside the pin. Before a real
+session you can confirm the routing without sending any clinical text:
+
+```bash
+python -m src.openrouter_privacy --model openai/gpt-5.2-chat --live   # prints the serving provider
+```
+
+Environment variables (optional; the defaults are the safe ones): `OPENROUTER_PRIVACY_GUARD` (1/0),
+`OPENROUTER_ZDR` (1/0), `OPENROUTER_DATA_COLLECTION` (deny/allow), `OPENROUTER_PROVIDER_ORDER`
+(comma-separated; `any` removes the pin), `OPENROUTER_ALLOW_FALLBACKS` (0/1). We also recommend enabling
+zero data retention for the OpenAI model group in your OpenRouter account settings
+(<https://openrouter.ai/settings/privacy>), which enforces the same restriction account-wide.
+
+The guard was added in October 2026, after the sessions reported in the paper, which ran under OpenRouter's
+default routing; it protects anyone who runs this code from now on.
+
 To reproduce the experiments you must:
 
 1. Obtain access to the underlying dataset (e.g. MIMIC-IV) via the proper channels.

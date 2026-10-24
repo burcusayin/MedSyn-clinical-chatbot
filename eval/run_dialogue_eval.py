@@ -27,6 +27,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -94,6 +95,12 @@ def run_llm_judge(
         api_key=api_key,
         default_headers={"X-Title": "MedSyn-Eval"},
     )
+    # Privacy guard (src/openrouter_privacy.py): the judge receives clinical note text, so route only
+    # to zero-data-retention, non-collecting endpoints; stop if OpenRouter answers from elsewhere.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from src.openrouter_privacy import extra_body, check_response_provider, PrivacyGuardViolation
+    guard_body = extra_body(model)
+    print(f"OpenRouter privacy routing for {model}: {guard_body or 'DISABLED'}")
 
     # Load cache
     cache: Dict[str, dict] = {}
@@ -135,11 +142,15 @@ def run_llm_judge(
                 ],
                 temperature=temperature,
                 max_tokens=max_tokens,
+                extra_body=guard_body,
             )
+            check_response_provider((getattr(resp, "model_extra", None) or {}).get("provider"), model)
             content = resp.choices[0].message.content or ""
             js = safe_json(content)
             score = float(js["score"]) if js and "score" in js else None
             rationale = str(js.get("rationale", ""))[:500] if js else None
+        except PrivacyGuardViolation:
+            raise   # fail closed: do not score the remaining turns through an unexpected provider
         except Exception as e:
             print(f"  Judge error: {e}")
             score, rationale = None, str(e)[:200]

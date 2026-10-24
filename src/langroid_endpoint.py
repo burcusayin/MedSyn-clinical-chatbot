@@ -123,14 +123,27 @@ class MainChatAgent:
         if "/" in model_id:
             return model_id
         return f"ollama/{model_id}"
+
+    def _lm_config(self, model_id: str, **kwargs) -> "lm.OpenAIGPTConfig":
+        """OpenAIGPTConfig for a local or OpenRouter model. OpenRouter models carry the privacy
+        guard (src/openrouter_privacy.py): zero-data-retention, non-collecting endpoints only and,
+        for OpenAI models, the Azure endpoint only, as recommended by PhysioNet for credentialed
+        clinical text. The guard fails closed if the installed Langroid cannot carry it."""
+        chat_model = self._resolve_chat_model(model_id)
+        if chat_model.startswith("openrouter/"):
+            from src.openrouter_privacy import langroid_call_params
+            kwargs.setdefault("params", langroid_call_params(chat_model))
+        return lm.OpenAIGPTConfig(chat_model=chat_model, **kwargs)
+
+    def _guard_check(self, llm, model_id: str) -> None:
+        chat_model = self._resolve_chat_model(model_id)
+        if chat_model.startswith("openrouter/"):
+            from src.openrouter_privacy import assert_langroid_passthrough
+            assert_langroid_passthrough(llm, chat_model)
               
     def create_single_agent(self, phy_prompt: str):
         print("Creating single agent environment...")
-        self.phy_lm_config = lm.OpenAIGPTConfig(
-            chat_model=self._resolve_chat_model(self.phy_model_id),
-            chat_context_length=104_000,
-            seed=self.random_seed,
-        )
+        self.phy_lm_config = self._lm_config(self.phy_model_id, chat_context_length=104_000, seed=self.random_seed)
         self.phy_agent = lr.ChatAgent(
             lr.ChatAgentConfig(
                 name=CP_NAME,
@@ -138,19 +151,17 @@ class MainChatAgent:
                 system_message=phy_prompt,
             )
         )
+        self._guard_check(self.phy_agent.llm, self.phy_model_id)
         # Single agent baseline uses the simplified BaselineDischargeTextTool
         self.phy_agent.enable_message(BaselineDischargeTextTool)
 
         
     def create_interactive_agent(self, phy_prompt: str, ass_prompt: str):
         # Assistant LLM (sees the full note), physician is a human typing
-        self.ass_lm_config = lm.OpenAIGPTConfig(
-            chat_model=self._resolve_chat_model(self.ass_model_id),
-            chat_context_length=104_000,
-            seed=self.random_seed,
-        )
+        self.ass_lm_config = self._lm_config(self.ass_model_id, chat_context_length=104_000, seed=self.random_seed)
         # Direct LLM wrapper, because we manage messages manually in start_interactive_chat
         self.ass_agent = lm.OpenAIGPT(self.ass_lm_config)
+        self._guard_check(self.ass_agent, self.ass_model_id)
         self.ass_prompt = ass_prompt
         self.phy_prompt = phy_prompt
   
@@ -159,11 +170,7 @@ class MainChatAgent:
         print("Creating  two-agent environment...")
 
         # Assistant agent (full clinical note)
-        self.ass_lm_config = lm.OpenAIGPTConfig(
-            chat_model=self._resolve_chat_model(self.ass_model_id),
-            chat_context_length=104_000,
-            seed=self.random_seed,
-        )
+        self.ass_lm_config = self._lm_config(self.ass_model_id, chat_context_length=104_000, seed=self.random_seed)
         self.ass_agent = lr.ChatAgent(
             lr.ChatAgentConfig(
                 name=PA_NAME,
@@ -171,13 +178,10 @@ class MainChatAgent:
                 system_message=ass_prompt,
             )
         )
+        self._guard_check(self.ass_agent.llm, self.ass_model_id)
 
         # Physician agent (chief complaint only)
-        self.phy_lm_config = lm.OpenAIGPTConfig(
-            chat_model=self._resolve_chat_model(self.phy_model_id),
-            chat_context_length=104_000,
-            seed=self.random_seed,
-        )
+        self.phy_lm_config = self._lm_config(self.phy_model_id, chat_context_length=104_000, seed=self.random_seed)
         self.phy_agent = lr.ChatAgent(
             lr.ChatAgentConfig(
                 name=CP_NAME,
@@ -185,6 +189,7 @@ class MainChatAgent:
                 system_message=phy_prompt,
             )
         )
+        self._guard_check(self.phy_agent.llm, self.phy_model_id)
         # Two-agent setup uses the full DischargeTextTool
         self.phy_agent.enable_message(DischargeTextTool)
 

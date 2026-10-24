@@ -140,12 +140,21 @@ def create_assistant_agent(ass_prompt: str) -> lr.ChatAgent:
         #
         # ASS_MODEL should be a full OpenRouter model id such as
         #   "openai/gpt-4o" or "google/gemini-2.5-flash"
+        # Privacy guard (src/openrouter_privacy.py): route only to zero-data-retention,
+        # non-collecting endpoints and, for OpenAI models, only to Azure, as recommended
+        # by PhysioNet for credentialed clinical text. Fails closed if it cannot be applied.
+        from src.openrouter_privacy import langroid_call_params, assert_langroid_passthrough
+        guarded_model = f"openrouter/{ASS_MODEL}"
         cfg = lm.OpenAIGPTConfig(
             timeout=180,
             chat_context_length=1_040_000,
-            chat_model=f"openrouter/{ASS_MODEL}",
+            chat_model=guarded_model,
             seed=RANDOM_SEED,
+            params=langroid_call_params(guarded_model),
         )
+        agent = lr.ChatAgent(lr.ChatAgentConfig(system_message=ass_prompt, llm=cfg))
+        assert_langroid_passthrough(agent.llm, guarded_model)
+        return agent
 
     else:
         raise ValueError(
