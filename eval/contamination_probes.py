@@ -28,9 +28,10 @@ used in the study (openai/gpt-5.2-chat-20251211) at temperature 0, through the O
 
 What is transmitted: only the chief complaint, history, physical examination and pertinent results sections
 (the same four sections as in the study); never the discharge diagnosis, condition or instructions.
-What is stored (eval/results/contamination/, git-ignored): raw_outputs.jsonl (every response with prompt hash,
-provider, served model, timestamp; reused as a cache so nothing is re-sent on reruns), probes_per_case.csv
-(metrics only, no free text), summary.json (aggregates only; safe to share). Model outputs may contain
+What is stored (eval/results/contamination/, git-ignored): raw_outputs.jsonl at the root (every response with
+prompt hash, provider, served model, timestamp; append-only cache so nothing is re-sent on reruns) and, per run, a
+timestamped folder run_<UTC>/ with probes_per_case.csv (metrics only, no free text) and summary.json (aggregates
+only; safe to share). Existing files are never overwritten. Model outputs may contain
 recalled note text and must be treated like the source data.
 
 Usage:
@@ -216,6 +217,17 @@ def full_context_reference():
                 anymatch62=float(row.iloc[0].any_primary_recall), n_cases=int(row.iloc[0].n_cases))
 
 
+def endpoint_listing(model):
+    """Names of the OpenRouter endpoints serving this model id at run time (public API, no key), recorded so that the
+    served snapshot can be documented: the response's 'model' field only echoes the requested id."""
+    try:
+        import urllib.request
+        with urllib.request.urlopen(f"https://openrouter.ai/api/v1/models/{model}/endpoints", timeout=20) as r:
+            return [e.get("name") for e in json.load(r)["data"].get("endpoints", [])]
+    except Exception as e:
+        return [f"unavailable: {e!r}"]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--dry_run", action="store_true", help="offline fake client; writes *_dry_run files only")
@@ -224,14 +236,17 @@ def main():
     ap.add_argument("--provider", default=None, help="override OPENROUTER_PROVIDER_ORDER (comma-separated; 'any' = no pin); default pins Azure for OpenAI models")
     ap.add_argument("--no_zdr", action="store_true", help="override OPENROUTER_ZDR=0 (not recommended)")
     ap.add_argument("--out_dir", default=str(R / "eval/results/contamination")); ap.add_argument("--model", default=MODEL)
-    a = ap.parse_args(); out = Path(a.out_dir); out.mkdir(parents=True, exist_ok=True); tag = "_dry_run" if a.dry_run else ""
+    a = ap.parse_args(); root = Path(a.out_dir); root.mkdir(parents=True, exist_ok=True); tag = "_dry_run" if a.dry_run else ""
+    # Each run writes into its own timestamped folder; the response cache (raw_outputs.jsonl) lives at the root and is
+    # append-only, so no file from an earlier run is ever overwritten.
+    out = root / f"run_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}{tag}"; out.mkdir(parents=False, exist_ok=False)
     cases = load_cases(); rng = np.random.default_rng(42); order = rng.permutation(len(cases))
     control = {cases.iloc[i].note_id: cases.iloc[order[(k + 1) % len(order)]].history for k, i in enumerate(order)}   # control = a different case's history
     assert all(control[n] != cases.set_index("note_id").history[n] for n in control), "control must come from a different case"
     if a.limit: cases = cases.head(a.limit)
     if a.provider is not None: os.environ["OPENROUTER_PROVIDER_ORDER"] = a.provider
     if a.no_zdr: os.environ["OPENROUTER_ZDR"] = "0"
-    client = FakeClient() if a.dry_run else OpenRouterClient(a.model, out / "raw_outputs.jsonl", from_cache_only=a.from_cache)
+    client = FakeClient() if a.dry_run else OpenRouterClient(a.model, root / "raw_outputs.jsonl", from_cache_only=a.from_cache)
     print(f"model={a.model} | cases={len(cases)} | routing={getattr(client, 'extra_body', None)} | outputs -> {out}")
     rows = []
     for _, c in cases.iterrows():
@@ -242,7 +257,7 @@ def main():
               f"C dataset={rec['C_dataset_named']} subj={rec['C_subject_id_recalled']} claim={rec['C_claims_recognition']} | D unknown={rec['D_unknown']} lcs={rec['D_lcs_ref']}")
     df = pd.DataFrame(rows); df.to_csv(out / f"probes_per_case{tag}.csv", index=False)
     multi = df[df.D_n_ref_dx > 1]
-    summ = dict(model=a.model, served_model=getattr(client, "last_model", None), providers_seen=sorted({str(p) for p in getattr(client, "providers", [])}), routing=getattr(client, "extra_body", None),
+    summ = dict(model=a.model, served_model=getattr(client, "last_model", None), endpoints_listed_at_run=(None if a.dry_run else endpoint_listing(a.model)), providers_seen=sorted({str(p) for p in getattr(client, "providers", [])}), routing=getattr(client, "extra_body", None),
                 n_cases=int(len(df)), n_requests_sent=int(getattr(client, "n_requests", 0)), n_responses_from_cache=int(getattr(client, "n_cached", 0)), dry_run=a.dry_run, run_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 A_unknown_rate=float(df.A_unknown.mean()), A_mean_lcw_true=float(df.A_lcw_true.mean()), A_mean_lcw_control=float(df.A_lcw_control.mean()), A_max_lcw_true=int(df.A_lcw_true.max()), A_max_lcw_control=int(df.A_lcw_control.max()),
                 A_cases_signal=int(((df.A_lcw_true >= 12) & (df.A_lcw_true > df.A_lcw_control)).sum()), A_mean_lcs_true=float(df.A_lcs_true.mean()), A_mean_lcs_control=float(df.A_lcs_control.mean()),
