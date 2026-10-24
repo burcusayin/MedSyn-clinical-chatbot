@@ -41,6 +41,7 @@ RESIDENTS = ["res1", "res3", "res5", "res6"]
 ALL_PARTICIPANTS = SENIORS + RESIDENTS
 SESSIONS = {1: "baseline", 2: "interactive", 3: "baseline", 4: "interactive"}
 DIFF_WEIGHTS = {"Easy": 3 / 13, "Medium": 6 / 13, "Hard": 4 / 13}
+NO_STANDARDIZE = False  # set by --no_standardize: plain mean over cases instead of difficulty weighting
 MANUAL_SCORES = {"WRONG": 0.0, "PARTIALLY CORRECT": 0.5, "COMPLETELY CORRECT": 1.0}
 FIG_DPI = 400  # npj Digital Medicine: ≥300 dpi
 PALETTE = {"Senior": "#2166ac", "Resident": "#b2182b"}
@@ -118,6 +119,8 @@ def compute_case_metrics(pred_text: str, gold_text: str,
 # ── Difficulty standardisation ─────────────────────────────────────────────────
 def standardize(df: pd.DataFrame, metric: str) -> float:
     """Weighted mean over difficulty levels for one participant-session."""
+    if NO_STANDARDIZE:
+        return float(df[metric].mean()) if len(df) else 0.0
     result = 0.0
     for diff, w in DIFF_WEIGHTS.items():
         subset = df[df["difficulty"] == diff]
@@ -587,11 +590,14 @@ def run_part_b(mdf: pd.DataFrame, manual_df: pd.DataFrame, out_dir: Path,
         for cond in ["baseline", "interactive"]:
             sub = merged[(merged["participant"] == participant) &
                          (merged["condition"] == cond)]
-            weighted = sum(
-                DIFF_WEIGHTS[d] * sub[sub["difficulty"] == d]["manual_complete"].mean()
-                for d in DIFF_WEIGHTS
-                if len(sub[sub["difficulty"] == d]) > 0
-            )
+            if NO_STANDARDIZE:
+                weighted = float(sub["manual_complete"].mean()) if len(sub) else 0.0
+            else:
+                weighted = sum(
+                    DIFF_WEIGHTS[d] * sub[sub["difficulty"] == d]["manual_complete"].mean()
+                    for d in DIFF_WEIGHTS
+                    if len(sub[sub["difficulty"] == d]) > 0
+                )
             strict_records.append(dict(
                 participant=participant, condition=cond,
                 expertise="Senior" if participant in SENIORS else "Resident",
@@ -1423,7 +1429,15 @@ def main():
     parser.add_argument("--threshold", type=int, default=80)
     parser.add_argument("--bootstrap_n", type=int, default=20000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--difficulty_override", default=None,
+                        help="CSV with columns note_id,difficulty (Easy/Medium/Hard) replacing the "
+                             "study difficulty labels for all analyses (sensitivity analysis)")
+    parser.add_argument("--no_standardize", action="store_true",
+                        help="Disable difficulty standardisation: use the plain mean over cases "
+                             "per participant-session (sensitivity analysis)")
     args = parser.parse_args()
+    global NO_STANDARDIZE
+    NO_STANDARDIZE = bool(args.no_standardize)
 
     out_dir = Path(args.out_dir)
     fig_dir = out_dir / "figures"
@@ -1445,6 +1459,23 @@ def main():
     # Load data
     long_df = load_session_data(args.session_dir)
     manual_df = load_manual_data(args.manual_dir)
+    if args.difficulty_override:
+        ov = pd.read_csv(args.difficulty_override, dtype=str)
+        ov["difficulty"] = ov["difficulty"].str.strip().str.capitalize()
+        bad = set(ov["difficulty"]) - set(DIFF_WEIGHTS)
+        if bad:
+            raise SystemExit(f"difficulty_override: invalid labels {bad}")
+        dmap = dict(zip(ov["note_id"].astype(str), ov["difficulty"]))
+        missing = set(long_df["note_id"].astype(str)) - set(dmap)
+        if missing:
+            raise SystemExit(f"difficulty_override: {len(missing)} note_ids without a label, e.g. {sorted(missing)[:3]}")
+        long_df["difficulty"] = long_df["note_id"].astype(str).map(dmap)
+        if len(manual_df):
+            manual_df["difficulty"] = manual_df["note_id"].astype(str).map(dmap)
+        print(f"Difficulty labels overridden from {args.difficulty_override}: "
+              f"{long_df.drop_duplicates('note_id')['difficulty'].value_counts().to_dict()}")
+    if NO_STANDARDIZE:
+        print("Difficulty standardisation DISABLED (plain means)")
     print(f"Loaded: {len(long_df)} observations, "
           f"{len(manual_df)} manual labels\n")
 
